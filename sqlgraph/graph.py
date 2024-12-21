@@ -41,12 +41,13 @@ DISPLAY_SETTINGS = {
 
 
 class SqlGraph():
-    def __init__(self, mappings=None, *, table_group=None, include_intermediate_tables=False):
+    def __init__(self, tables=None, *, table_group=None):
         self.g = DiGraph()
-        self.include_intermediate_tables = include_intermediate_tables
         self.tables = {}
-        if mappings:
-            self.add_mappings(mappings, table_group=table_group) 
+        if tables:
+            for table in tables.values():
+                self.add_table(table, table_group)
+            #self.add_mappings(mappings, table_group=table_group) 
         
     def add_all(self, other):
         self.g = nx.compose(self.g, other.graphs)
@@ -99,12 +100,19 @@ class SqlGraph():
                 if type(tables) != dict or node['column'] in tables[node['table']]:
                     node.setdefault('groups', []).append(table_group)
         
-    def add_mappings(self, mappings, *, table_group=None):
-        for table, cols in mappings.items():
-            for column, source in cols.items():
-                self._add_column_source(table, column, source)
+    def add_table(self, table_source, table_group=None):
+        for column, source in table_source.columns.items():
+            self._add_column_source(table_source.name, column, source)
+            
         if table_group:
-            self.add_table_group(table_group, mappings.keys())
+            self.add_table_group(table_group, table_source.name)
+        
+    # def add_mappings(self, mappings, *, table_group=None):
+    #     for table, cols in mappings.items():
+    #         for column, source in cols.items():
+    #             self._add_column_source(table, column, source)
+    #     if table_group:
+    #         self.add_table_group(table_group, mappings.keys())
             
     def _apply_display_settings(self, node):
         display_settings = DISPLAY_SETTINGS.get(node['type'])
@@ -141,16 +149,13 @@ class SqlGraph():
         seq_id = f'.[{seq}]' if seq else ''
         additional_attributes = {}
         if type(source) == _src.ColumnSource and type(source.table) == _src.TableSource:
-            if self.include_intermediate_tables:  
-                if source.table.qualified_name not in self.tables:
-                    for c, cs in source.table.columns.items():
+            if source.table.qualified_name not in self.tables:
+                for c, cs in source.table.columns.items():
+                    if cs:
                         self._add_column_source(source.table.qualified_name, c, cs)
-                    self.tables[source.table.qualified_name] = source.table
-                additional_attributes = {'table_type': source.table.type}
-                source.table = source.table.qualified_name
-            else:
-                while type(source) == _src.ColumnSource and type(source.table) == _src.TableSource:
-                    source = source.table.columns[source.column]
+                self.tables[source.table.qualified_name] = source.table
+            additional_attributes = {'table_type': source.table.type}
+            source.table = source.table.qualified_name
         
         if type(source) == _src.ColumnSource:
             src_id =  f'{source.table}.{source.column}'
@@ -163,7 +168,7 @@ class SqlGraph():
         elif type(source) == _src.CompositeSource:
             src_id = f'{dest_id}{seq_id}.composite'
         elif type(source) == _src.UnionSource:
-            src_id = f'{dest_id}{seq_id}.union' + (f'.{source.group_id}' if source.group_id else '')
+            src_id = f'{dest_id}{seq_id}.union'
         elif type(source) == _src.Source:
             src_id = f'{dest_id}{seq_id}.source'
         elif type(source) == _src.UnknownSource:

@@ -5,6 +5,8 @@ import logging
 import json
 from sqlgraph import source as _src
 from uuid import uuid4
+from sqlgraph.source import TableSource
+from sqlgraph.schema import Table
 
 _type = type
 
@@ -12,48 +14,49 @@ logger = logging.getLogger(__name__)
 
 
 class SqlTrace():
-    def __init__(self, mappings):
-        self._mappings = mappings
+    def __init__(self, tables):
+        self.tables = tables
         
-    @property
-    def tables(self):
-        return self._mappings
+    # @property
+    # def tables(self):
+    #     return self._mappings
     
     def table(self, table_name):
-        return self._mappings[table_name]
+        return self.tables[table_name]
         
     def to_graph(self, **kwargs):
-        return SqlGraph(self._mappings, **kwargs)
+        return SqlGraph(self.tables, **kwargs)
     
     def __str__(self):
         s = ''
-        for table, columns in self._mappings.items():
+        for table, ts in self._mappings.items():
             if s:
                 s += '\n\n'
             s += table + '\n'
             s += '------------------\n'
-            for column, source in columns.items():
+            for column, source in ts.columns.items():
                 s += f'  {column}: {source}\n'
         return s
 
         
     @classmethod
-    def trace_sql(cls, sql, name=None, *, dialect=None, schema=None):
+    def trace_sql(cls, sql, name=None, *, dialect=None, schema=None, db=None, catalog=None):
         if type(sql) == str:
             if not name:
                 raise ValueError('name is required for single SQL statement')
             else:
                 sql = {name: sql}
                 
-        mapping = {}
+        tables = {}
         for n, s in sql.items():
+            tbl = Table(n, None, db, catalog)
             t = parse_one(s, dialect=dialect)
-            mapping[n] = cls.Tracer(schema=schema).trace_table(t, n)
+            tables[n] = cls.Tracer(schema=schema).trace_table(t, tbl.id)
             
-        return SqlTrace(mapping)
+        return SqlTrace(tables)
         
     @classmethod
-    def trace_file(cls, file, *, name=None, dialect=None, column_resolver=None):
+    def trace_file(cls, file, *, name=None, dialect=None, schema=None, db=None, catalog=None):
         if not name:
             name = os.path.basename(file).rsplit('.', 1)[0]
         with open(file) as f:
@@ -62,12 +65,14 @@ class SqlTrace():
                 sql, 
                 name,
                 dialect=dialect,
-                column_resolver=column_resolver
+                schema=schema,
+                db=db,
+                catalog=catalog
             )
     
     @classmethod
-    def trace_directory(cls, directory, *, models=None, excluded_models=None, dialect=None, column_resolver=None):
-        mappings = {}
+    def trace_directory(cls, directory, *, models=None, excluded_models=None, dialect=None, schema=None, db=None, catalog=None):
+        tables = {}
         for root, dirs, files in os.walk(directory):
             for file in files:
                 model = file[0:-4]
@@ -78,15 +83,17 @@ class SqlTrace():
                     continue
                 
                 print(f'tracing {file}')
-                mappings.update(
+                tables.update(
                     cls.trace_file(
                         os.path.join(root, file), 
                         name=model, 
                         dialect=dialect, 
-                        column_resolver=column_resolver
-                    )._mappings
+                        schema=schema,
+                        db=db,
+                        catalog=catalog
+                    ).tables
                 )
-        return SqlTrace(mappings)
+        return SqlTrace(tables)
     
     @classmethod
     def list_models(cls, directory):
@@ -150,31 +157,22 @@ class SqlTrace():
         
         def trace_table(self, tbl, name=None):
             comment_mappings = self.get_comment_mappings(tbl)
-            traced = self.trace_table_structure(tbl, name=name)
-            mappings = {}
-            # if type(tbl) == exp.Union:
-            #     traced = self.get_star_cols(tbl)
-            # else:
-            #     traced = {}
-            #     for e in tbl.expressions:
-            #         st = self.trace(e)
-            #         if type(st) != dict:
-            #             st = {e.alias_or_name: st}
-            #         traced.update(st)
-                    
-            for tk, tv in traced.items():
-                mappings[tk] = comment_mappings.get(tk, tv)    
-            return mappings
+            return self.trace_table_structure(tbl, name=name)
+            # mappings = {}
+            #
+            # for tk, tv in traced.items():
+            #     mappings[tk] = comment_mappings.get(tk, tv)    
+            # return mappings
         
          
-        def resolve_columns_for_table(self, t):
+        def resolve_table(self, t):
             table_key = f'{t.db}.{t.name}'
             if table_key not in self.column_cache:
                 if self.schema:
-                    self.column_cache[table_key]= self.schema.get_table(t.name, t.db, t.catalog)
+                    self.column_cache[table_key]= self.schema.get_table(t.name, t.db or None, t.catalog or None)
                 else:
                     self.column_cache[table_key] = None
-            return self.column_cache[table_key].columns if self.column_cache[table_key] else None
+            return self.column_cache[table_key]
         
          
         def find_direct(self, parent, exp_type):
@@ -219,8 +217,6 @@ class SqlTrace():
             source = sources[identifier.alias_or_name]
             return source.args['this']
         
-        
-        
         def trace_table_structure(self, t, *, type=None, name=None):
             if _type(t) in [exp.From, exp.Join]:
                 return self.trace_table_structure(
@@ -244,28 +240,61 @@ class SqlTrace():
                 if '*' in t.named_selects:
                     for src in self.get_select_sources(t).values():
                         trc = self.trace_table_structure(src, name=name)
-                        columns.update(trc)
+                        columns.update(trc.columns)
                         
                 for col_name, col_val in zip(t.named_selects, t.selects):
                     if col_name != '*':
                         columns[col_name] = self.trace(col_val)
                 
-                if type:
-                    ts = _src.TableSource(name, columns, type=type)
-                    columns = {c: _src.ColumnSource(ts, c) for c in columns}
-                return columns
+                if not type:
+                    type = 'values' if _type(t) == exp.Values else 'select'
+                ts = _src.TableSource(name, columns, type=type)
+                return ts
+                #columns = {c: _src.ColumnSource(ts, c) for c in columns}
+                #return columns
             elif _type(t) == exp.Table:
-                return self.get_columns_for_table(t)
+                return self.get_columns_for_table(t, name)
             elif _type(t) == exp.Union:
-                left_cols = self.trace_table_structure(t.left, name=name)
-                right_cols = self.trace_table_structure(t.right, name=name)
-                combined = {}
-                group_id = str(uuid4())
-                for left, right in zip(left_cols.items(), right_cols.items()):
-                    left_col, left_src = left
-                    _, right_src = right
-                    combined[left_col] = _src.UnionSource(left_src, right_src, group_id=group_id)
-                return combined
+                union_tables = []
+                while _type(t) == exp.Union:
+                    union_tables.insert(0, t.right)
+                    t = t.left
+                union_tables.insert(0, t)
+                
+                uts = list([
+                    self.trace_table_structure(union_tables[i], name=name+f'.union[{i}]') 
+                    for i in range(len(union_tables))
+                ])
+                
+                ts = _src.TableSource(
+                    name, 
+                    {
+                        c: _src.UnionSource(
+                            sources=[
+                                _src.ColumnSource(t, c) 
+                                for t in uts
+                            ]
+                        )
+                        for c in uts[0].columns.keys()
+                    }, 
+                    type='union'
+                )
+                
+                # left_tbl = self.trace_table_structure(union_tables[0], name=name+'.union[0]')
+                # for i in range(1, len(union_tables)):
+                #     union_table = union_tables[i]
+                #     right_tbl = self.trace_table_structure(union_table, name=name+f'.union[{i}]')
+                #     combined = {}
+                #     for left, right in zip(left_tbl.columns.items(), right_tbl.columns.items()):
+                #         left_col, left_src = left
+                #         _, right_src = right
+                #         combined[left_col] = _src.UnionSource(left_src, right_src)
+                #     left_cols = combined
+                #
+                # ts = _src.TableSource(name+'.union', left_cols, type='union')
+                return ts
+                #columns = {c: _src.ColumnSource(ts, c) for c in left_cols}
+                #return columns
             elif _type(t) == exp.Lateral:
                 print('TODO: lateral not yet handled')
                 return {}
@@ -279,16 +308,16 @@ class SqlTrace():
                 if type(src) == exp.Table:
                     return _src.ColumnSource(src.name, column.name)
                 else:
-                    table_cols = self.trace_table_structure(src)
+                    ts = self.trace_table_structure(src)
                     if column.name == '*':
-                        return table_cols
+                        return {c: _src.ColumnSource(ts, c) for c in ts.columns.keys()}
                     else:
-                        return table_cols[column.name]
+                        return _src.ColumnSource(ts, column.name)
             else:
                 for s in self.get_select_sources(column.parent_select).values():
-                    cols = self.trace_table_structure(s)
-                    if column.name in cols:
-                        return cols[column.name]
+                    ts = self.trace_table_structure(s)
+                    if column.name in ts.columns:
+                        return _src.ColumnSource(ts, column.name)
             return _src.UnknownSource(f'[Column] {column}')
     
         
@@ -298,13 +327,13 @@ class SqlTrace():
                 return self.get_table(column.parent_select, column.args['table'])
             else:
                 for s in self.get_select_sources(column.parent_select).values():
-                    cols = self.trace_table_structure(s)
-                    if column.name in cols:
+                    ts = self.trace_table_structure(s)
+                    if column.name in ts.columns:
                         return s.args['this']
         
          
-        def get_columns_for_table(self, table):
-            if type(table) in [exp.CTE, exp.Subquery, exp.Values]:
+        def get_columns_for_table(self, table, name):
+            if _type(table) in [exp.CTE, exp.Subquery, exp.Values]:
                 cols = {}
                 for n, c in zip(table.named_selects, table.selects):
                     if n == '*':
@@ -312,12 +341,31 @@ class SqlTrace():
                         cols.update(sc)
                     else:
                         cols[n] = self.trace(c) 
-                return cols
+                type = {
+                    exp.CTE: 'cte',
+                    exp.Subquery: 'sq',
+                    exp.Values: 'values'
+                }[_type(table)]
+                ts = TableSource(
+                    name+'.'+type,
+                    cols,
+                    type=type
+                )
+                return ts
             else:
-                return {
-                    c: _src.ColumnSource(table.name, c)
-                    for c in self.resolve_columns_for_table(table)
-                }
+                tbl = self.resolve_table(table)
+                if tbl:
+                    return TableSource(
+                        tbl.id,
+                        {c: None for c in tbl.columns},
+                        type='table'
+                    )
+                    # return {
+                    #     c: _src.ColumnSource(table.name, c)
+                    #     for c in cols
+                    # }
+                else:
+                    raise ValueError(f'unable to resolve columns for table {table}')
         
          
         def trace_cte_column(self, cte, col_name):
@@ -331,7 +379,9 @@ class SqlTrace():
         
          
         def get_star_cols(self, select):
-            return self.trace_table_structure(select)
+            ts = self.trace_table_structure(select)
+            columns = {c: _src.ColumnSource(ts, c) for c in ts.columns}
+            return columns
                 
          
         def trace_window(self, w):

@@ -59,18 +59,62 @@ class LayoutTest(unittest.TestCase):
 
         schema = DictSchema(TABLES)
         
-        traced = SqlTrace.trace_sql(SQLs, dialect='postgres', schema=schema)
+        traced = SqlTrace.trace_sql(SQLs, dialect='postgres', schema=schema, db='test_schema', catalog='test_db')
         
-        for table, columns in traced.tables.items():
-            print(table)
-            for field, source in columns.items():
-                print(f'{field}: {json.dumps(source.to_dict(), indent=2)}')
-                print()
+        actual = {
+            table_name: table_source.to_dict()
+            for table_name, table_source in traced.tables.items()
+        }
+        
+        print(json.dumps(actual, indent=2))
             
-        g = traced.to_graph(include_intermediate_tables=True)
-        
+        g = traced.to_graph()
 
         A = g.to_agraph()        
-        A.draw("test.png", prog="dot")
+        A.draw("test_layout.png", prog="dot")
+        
+    def test_layout_union(self):
+        TABLES = {
+            None: {
+                None: {
+                    'cats': [
+                        'name',
+                        'age'
+                    ],
+                    'dogs': [
+                        'name',
+                        'age'
+                    ],
+                    'rats': [
+                        'name',
+                        'age'
+                    ]
+                }
+            }
+        }
+        SQLs = {
+            'pets': """\
+              SELECT 'cat' as type, * FROM cats
+              UNION ALL
+              SELECT 'dog' as type, * FROM dogs
+              UNION ALL
+              SELECT 'rat' as type, * FROM rats
+            """
+        }
+        
+        schema = DictSchema(TABLES)
+        traced = SqlTrace.trace_sql(SQLs, dialect='postgres', schema=schema)
+        
+        actual = {
+            table_name: table_source.to_dict()
+            for table_name, table_source in traced.tables.items()
+        }
+        
+        print(json.dumps(actual, indent=2))
+            
+        g = traced.to_graph()
+
+        A = g.to_agraph()        
+        A.draw("test_layout_union.png", prog="dot")
         
         

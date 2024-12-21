@@ -66,7 +66,7 @@ class TableSource():
             d['catalog'] = self.catalog
         
         d['columns'] = {
-            name: src.to_dict()
+            name: src.to_dict() if src else None
             for name, src in self.columns.items()
         }
         return d
@@ -144,19 +144,17 @@ class StructSource(Source):
         return d
     
 class UnionSource(CompositeSource):
-    def __init__(self, left, right, *, group_id=None, **kwargs):
-        sources = []
+    def __init__(self, left=None, right=None, *, sources=[], **kwargs):
+        sources = sources
         if type(left) == UnionSource:
             sources.extend(left.sources)
-        else:
+        elif left:
             sources.append(left)
         
         if type(right) == UnionSource:
             sources.extend(right.sources)
-        else:
+        elif right:
             sources.append(right)
-            
-        self.group_id = group_id
         
         super().__init__(sources=sources, **kwargs)
                 
@@ -165,8 +163,7 @@ class UnionSource(CompositeSource):
         
     def to_dict(self):
         d = {
-                'type': 'union',
-                'group_id': self.group_id
+                'type': 'union'
             }
         d.update({k: v for k,v in super().to_dict().items() if k not in d})
         return d

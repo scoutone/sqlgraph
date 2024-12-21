@@ -6,24 +6,27 @@ class Table():
         self.db = db
         self.catalog = catalog
         self.columns = columns
-        
-    def __str__(self):
+       
+    @property 
+    def id(self):
         s = self.table
         if self.db:
             s = self.db + '.' + s
             if self.catalog:
                 s = self.catalog + '.' + s
         return s
+        
+    def __str__(self):
+        return self.id
     
     def __repr__(self):
-        return 'Table['+self.__str__()+']'
+        return 'Table['+self.id+']'
     
     def __eq__(self, other):
         return isinstance(other, Table) and \
                self.table == other.table and \
                self.db == other.db and \
-               self.catalog == other.catalog and \
-               self.columns == other.columns
+               self.catalog == other.catalog
     
     def __ne__(self, other):
         return not self.__eq__(other)
