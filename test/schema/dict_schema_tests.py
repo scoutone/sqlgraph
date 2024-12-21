@@ -1,4 +1,5 @@
-from sqlgraph.schema import DictSchema, Table
+from sqlgraph.schema import DictSchema
+from sqlgraph.model import Table
 import unittest
 
 

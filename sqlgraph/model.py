@@ -1,4 +1,52 @@
 
+
+class Table():
+    def __init__(self, name, columns, db=None, catalog=None, type='table'):
+        self.name = name
+        self.db = db
+        self.catalog = catalog
+        self.columns = columns
+        self.type = type
+       
+    @property 
+    def id(self):
+        s = self.name
+        if self.db:
+            s = self.db + '.' + s
+            if self.catalog:
+                s = self.catalog + '.' + s
+        return s
+        
+    def __str__(self):
+        return self.id
+    
+    def __repr__(self):
+        return 'Table['+self.id+']'
+    
+    def __eq__(self, other):
+        return isinstance(other, Table) and \
+               self.name == other.name and \
+               self.db == other.db and \
+               self.catalog == other.catalog
+    
+    def __ne__(self, other):
+        return not self.__eq__(other)
+    
+    def to_dict(self):
+        d = {
+            'type': self.type,
+            'name': self.name
+        }
+        
+        if self.db:
+            d['db'] = self.db
+        if self.catalog:
+            d['catalog'] = self.catalog
+            
+        d['id'] = self.id
+        d['columns'] = self.columns
+        return d
+    
 class Source():
     def __init__(self, *, notes=None, internal=None):
         self.notes = notes
@@ -36,40 +84,17 @@ class CompositeSource(Source):
         d.update({k: v for k,v in super().to_dict().items() if k not in d})
         return d
     
-class TableSource():
-    def __init__(self, name, columns, type, *, db=None, catalog=None):
-        self.name = name
-        self.type = type
-        self.columns = columns
-        self.db = db
-        self.catalog = catalog
-        
-    @property
-    def qualified_name(self):
-        n = self.name
-        if self.db:
-            n += '.'+self.db
-            if self.catalog:
-                n += '.' + self.catalog
-        return n
+class TableSource(Table):
+    def __init__(self, name, sources, type, *, db=None, catalog=None):
+        super().__init__(name, list(sources.keys()), db=db, catalog=catalog, type=type)
+        self.sources = sources
         
     def to_dict(self):
-        d = {
-            'type': 'table',
-            'type': self.type,
-            'name': self.name
+        d = super().to_dict()
+        d['sources'] = {
+            c: s.to_dict()
+            for c, s in self.sources.items()
         }
-        
-        if self.db:
-            d['db'] = self.db
-        if self.catalog:
-            d['catalog'] = self.catalog
-        
-        d['columns'] = {
-            name: src.to_dict() if src else None
-            for name, src in self.columns.items()
-        }
-        return d
     
 class TransformSource(CompositeSource):
     def __init__(self, transform, sources, **kwargs):
@@ -122,7 +147,7 @@ class ColumnSource(Source):
     def to_dict(self):
         d = {
             'type': 'column',
-            'table': self.table if type(self.table) == str else self.table.to_dict(),
+            'table': self.table if type(self.table) == str else self.table.id,
             'column': self.column
         }
         d.update({k: v for k,v in super().to_dict().items() if k not in d})

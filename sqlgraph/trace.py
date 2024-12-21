@@ -3,10 +3,9 @@ from sqlglot import parse_one, exp
 import os
 import logging
 import json
-from sqlgraph import source as _src
+from sqlgraph import model as mdl
 from uuid import uuid4
-from sqlgraph.source import TableSource
-from sqlgraph.schema import Table
+from sqlgraph.model import Table, TableSource
 
 _type = type
 
@@ -121,17 +120,17 @@ class SqlTrace():
             transforms = m.pop('transforms', None)
             if 'src' in m:
                 table, column = m.pop('src').split('.')
-                s = _src.ColumnSource(table, column, **m)
+                s = mdl.ColumnSource(table, column, **m)
             elif 'sources' in m:
-                s = _src.CompositeSource(sources=[self.parse_mapping_dict(mx) for mx in m['sources']], **{k:v for k,v in m.items() if k!= 'sources'})
+                s = mdl.CompositeSource(sources=[self.parse_mapping_dict(mx) for mx in m['sources']], **{k:v for k,v in m.items() if k!= 'sources'})
             elif 'value' in m:
-                s = _src.ConstantSource(**m)
+                s = mdl.ConstantSource(**m)
             else:
-                s = _src.Source(**m)
+                s = mdl.Source(**m)
                 
             if transforms:
                 for t in reversed(transforms):
-                    s = _src.TransformSource(t, s)
+                    s = mdl.TransformSource(t, s)
             return s
     
         
@@ -248,9 +247,9 @@ class SqlTrace():
                 
                 if not type:
                     type = 'values' if _type(t) == exp.Values else 'select'
-                ts = _src.TableSource(name, columns, type=type)
+                ts = mdl.TableSource(name, columns, type=type)
                 return ts
-                #columns = {c: _src.ColumnSource(ts, c) for c in columns}
+                #columns = {c: mdl.ColumnSource(ts, c) for c in columns}
                 #return columns
             elif _type(t) == exp.Table:
                 return self.get_columns_for_table(t, name)
@@ -266,12 +265,12 @@ class SqlTrace():
                     for i in range(len(union_tables))
                 ])
                 
-                ts = _src.TableSource(
+                ts = mdl.TableSource(
                     name, 
                     {
-                        c: _src.UnionSource(
+                        c: mdl.UnionSource(
                             sources=[
-                                _src.ColumnSource(t, c) 
+                                mdl.ColumnSource(t, c) 
                                 for t in uts
                             ]
                         )
@@ -286,14 +285,14 @@ class SqlTrace():
                 #     right_tbl = self.trace_table_structure(union_table, name=name+f'.union[{i}]')
                 #     combined = {}
                 #     for left, right in zip(left_tbl.columns.items(), right_tbl.columns.items()):
-                #         left_col, left_src = left
-                #         _, right_src = right
-                #         combined[left_col] = _src.UnionSource(left_src, right_src)
+                #         left_col, leftmdl = left
+                #         _, rightmdl = right
+                #         combined[left_col] = mdl.UnionSource(leftmdl, rightmdl)
                 #     left_cols = combined
                 #
-                # ts = _src.TableSource(name+'.union', left_cols, type='union')
+                # ts = mdl.TableSource(name+'.union', left_cols, type='union')
                 return ts
-                #columns = {c: _src.ColumnSource(ts, c) for c in left_cols}
+                #columns = {c: mdl.ColumnSource(ts, c) for c in left_cols}
                 #return columns
             elif _type(t) == exp.Lateral:
                 print('TODO: lateral not yet handled')
@@ -306,19 +305,19 @@ class SqlTrace():
             if 'table' in column.args:
                 src = self.get_table(column.parent_select, column.args['table'])
                 if type(src) == exp.Table:
-                    return _src.ColumnSource(src.name, column.name)
+                    return mdl.ColumnSource(src.name, column.name)
                 else:
                     ts = self.trace_table_structure(src)
                     if column.name == '*':
-                        return {c: _src.ColumnSource(ts, c) for c in ts.columns.keys()}
+                        return {c: mdl.ColumnSource(ts, c) for c in ts.columns.keys()}
                     else:
-                        return _src.ColumnSource(ts, column.name)
+                        return mdl.ColumnSource(ts, column.name)
             else:
                 for s in self.get_select_sources(column.parent_select).values():
                     ts = self.trace_table_structure(s)
                     if column.name in ts.columns:
-                        return _src.ColumnSource(ts, column.name)
-            return _src.UnknownSource(f'[Column] {column}')
+                        return mdl.ColumnSource(ts, column.name)
+            return mdl.UnknownSource(f'[Column] {column}')
     
         
          
@@ -355,13 +354,9 @@ class SqlTrace():
             else:
                 tbl = self.resolve_table(table)
                 if tbl:
-                    return TableSource(
-                        tbl.id,
-                        {c: None for c in tbl.columns},
-                        type='table'
-                    )
+                    return tbl
                     # return {
-                    #     c: _src.ColumnSource(table.name, c)
+                    #     c: mdl.ColumnSource(table.name, c)
                     #     for c in cols
                     # }
                 else:
@@ -380,19 +375,19 @@ class SqlTrace():
          
         def get_star_cols(self, select):
             ts = self.trace_table_structure(select)
-            columns = {c: _src.ColumnSource(ts, c) for c in ts.columns}
+            columns = {c: mdl.ColumnSource(ts, c) for c in ts.columns}
             return columns
                 
          
         def trace_window(self, w):
             if type(w.this) == exp.RowNumber:
-                return _src.ConstantSource('ROW_NUMBER')
+                return mdl.ConstantSource('ROW_NUMBER')
             elif w.this.alias_or_name == 'DENSE_RANK':
-                return _src.ConstantSource(w.this.alias_or_name)
-            return _src.UnknownSource('[Window] '+str(w))
+                return mdl.ConstantSource(w.this.alias_or_name)
+            return mdl.UnknownSource('[Window] '+str(w))
         
          
-        def get_src_columns(self, t):
+        def getmdl_columns(self, t):
             if 'src_columns' in t:
                 return t['src_columns']
             elif 'src_column' in t:
@@ -405,11 +400,11 @@ class SqlTrace():
             r = self.trace(p.this)
             if type(p.expression) not in [exp.Literal]:
                 et = self.trace(p.expression)
-                if type(r) == _src.TransformSource and r.transform == 'CONCAT':
+                if type(r) == mdl.TransformSource and r.transform == 'CONCAT':
                     sources = r.sources + [et]
                 else:
                     sources = [r, et]
-                r = _src.TransformSource('CONCAT', sources)
+                r = mdl.TransformSource('CONCAT', sources)
             return r
         
          
@@ -419,39 +414,39 @@ class SqlTrace():
             
             if name.lower() == 'phone_priority':
                 priority = {'1': 'first', '2': 'second', '3': 'third'}[str(params[0])]
-                return _src.TransformSource(
+                return mdl.TransformSource(
                     'PHONE_PRIORITY',
                     [self.trace(p) for p in params[1:]],
                     notes=f'{priority} populated value'
                 )
             elif name.lower() == 'max_length':
-                return _src.TransformSource(f'MAX_LENGTH({params[1]})', self.trace(params[0]))
+                return mdl.TransformSource(f'MAX_LENGTH({params[1]})', self.trace(params[0]))
             elif name.lower() == 'join_valued':
-                return _src.TransformSource('JOIN_VALUED', [self.trace(p) for p in params[1:]])
+                return mdl.TransformSource('JOIN_VALUED', [self.trace(p) for p in params[1:]])
             elif name.lower() == 'substring':
                 args = str(d.args['start'])
                 if 'length' in d.args:
                     args = args+','+str(d.args['length'])
-                return _src.TransformSource(f'SUBSTRING({args})', self.trace(d.args['this']))
+                return mdl.TransformSource(f'SUBSTRING({args})', self.trace(d.args['this']))
             elif name.lower() == 'splitpart':
                 args = str(d.args['delimiter'])+','+str(d.args['part_index'])
-                return _src.TransformSource(f'SPLIT_PART({args})', self.trace(d.args['this']))
+                return mdl.TransformSource(f'SPLIT_PART({args})', self.trace(d.args['this']))
             elif name.lower() == 'split_max':
                 args = str(d.expressions[1])+','+str(d.expressions[2])
-                return _src.TransformSource(f'SPLIT_MAX({args})', self.trace(d.expressions[0]))
+                return mdl.TransformSource(f'SPLIT_MAX({args})', self.trace(d.expressions[0]))
             elif name.lower() == 'time_to_str':
                 args = str(d.args['delimiter'])+','+str(d.args['part_index'])
-                return _src.TransformSource(f'TIME_TO_STR({args})', self.trace(d.args['this']))
+                return mdl.TransformSource(f'TIME_TO_STR({args})', self.trace(d.args['this']))
             elif name.lower() == 'try_cast':
-                return _src.TransformSource('TRY_CAST', d.expressions[0])
+                return mdl.TransformSource('TRY_CAST', d.expressions[0])
             elif len(params) == 1:
-                return _src.TransformSource(name, self.trace(params[0]))
+                return mdl.TransformSource(name, self.trace(params[0]))
             
-            return _src.UnknownSource(f'dot: {d}')
+            return mdl.UnknownSource(f'dot: {d}')
         
          
         def trace_coalesce(self, coalesce):
-            return _src.CompositeSource(
+            return mdl.CompositeSource(
                 [
                     self.trace(x) 
                     for x in [
@@ -462,9 +457,9 @@ class SqlTrace():
             
         
         def trace_struct(self, struct):
-            return _src.CompositeSource(
+            return mdl.CompositeSource(
                 [
-                    _src.StructSource(e.name, self.trace(e.expression))
+                    mdl.StructSource(e.name, self.trace(e.expression))
                     for e in struct.expressions
                 ]
             )
@@ -494,24 +489,24 @@ class SqlTrace():
             elif type(e) == exp.Star:
                 return self.get_star_cols(e.parent_select)
             elif type(e) == exp.Bracket:
-                col_src = self.trace(e.args['this'])
-                if type(col_src) == _src.ColumnSource:
-                    return _src.TransformSource(f'LIST_INDEX[{e.output_name}]', col_src)
-                return col_src
+                colmdl = self.trace(e.args['this'])
+                if type(colmdl) == mdl.ColumnSource:
+                    return mdl.TransformSource(f'LIST_INDEX[{e.output_name}]', colmdl)
+                return colmdl
             elif type(e) in [exp.Literal, exp.CurrentDate, exp.Boolean]:
-                return _src.ConstantSource(str(e))
+                return mdl.ConstantSource(str(e))
             elif type(e) == exp.Count:
-                return _src.ConstantSource('COUNT')
+                return mdl.ConstantSource('COUNT')
             elif type(e) == exp.Null:
-                return _src.ConstantSource('NULL')
-            elif isinstance(e, _src.Source):
+                return mdl.ConstantSource('NULL')
+            elif isinstance(e, mdl.Source):
                 raise ValueError('something is wrong')
             elif type(e) == exp.Lower:
-                return _src.TransformSource('LOWER', self.trace(e.args['this']))
+                return mdl.TransformSource('LOWER', self.trace(e.args['this']))
             elif type(e) == exp.Not:
-                return _src.TransformSource('NOT', self.trace(e.args['this']))
+                return mdl.TransformSource('NOT', self.trace(e.args['this']))
             elif type(e) in [exp.EQ]:
-                return _src.TransformSource(
+                return mdl.TransformSource(
                     e.__class__.__name__.upper(), 
                     [
                         self.trace(e.left), 
@@ -520,9 +515,9 @@ class SqlTrace():
                 )
             elif type(e) == exp.Is:
                 if type(e.right) == exp.Null:
-                    return _src.TransformSource('IS NULL', [self.trace(e.left)])
+                    return mdl.TransformSource('IS NULL', [self.trace(e.left)])
                 else:
-                    return _src.TransformSource(
+                    return mdl.TransformSource(
                         e.__class__.__name__.upper(), 
                         [
                             self.trace(e.left), 
@@ -530,4 +525,4 @@ class SqlTrace():
                         ]
                     )
             else:
-                return _src.UnknownSource(f'[{type(e).__name__}] {e}')
+                return mdl.UnknownSource(f'[{type(e).__name__}] {e}')

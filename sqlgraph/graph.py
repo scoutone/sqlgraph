@@ -1,8 +1,9 @@
 from networkx.classes.digraph import DiGraph
 import networkx as nx
-from sqlgraph import source as _src
+from sqlgraph import model as mdl
 import textwrap
 from copy import deepcopy
+from sqlgraph.model import TableSource
 
 _type = type
 
@@ -100,12 +101,13 @@ class SqlGraph():
                 if type(tables) != dict or node['column'] in tables[node['table']]:
                     node.setdefault('groups', []).append(table_group)
         
-    def add_table(self, table_source, table_group=None):
-        for column, source in table_source.columns.items():
-            self._add_column_source(table_source.name, column, source)
+    def add_table(self, table, table_group=None):
+        for column in table.columns:
+            src = table.sources[column] if _type(table) == TableSource else None
+            self._add_column(table.id, column, src)
             
         if table_group:
-            self.add_table_group(table_group, table_source.name)
+            self.add_table_group(table_group, table.name)
         
     # def add_mappings(self, mappings, *, table_group=None):
     #     for table, cols in mappings.items():
@@ -125,18 +127,20 @@ class SqlGraph():
             node.update(display_settings)
         return node
                 
-    def _add_column_source(self, table, column, source):
+    def _add_column(self, table_id, column, source):
         node = {
-            'id': f'{table}.{column}',
+            'id': f'{table_id}.{column}',
             'type': 'column',
-            'table': table,
+            'table': table_id,
             'column': column,
             'mapped': True
         }
         
         node = self._apply_display_settings(node)
         node_id = self._add_node(node)
-        self._add_node_source(node_id, source)
+        
+        if source:
+            self._add_node_source(node_id, source)
 
     def _add_node(self, node):
         self.g.add_node(node['id'], **{k: v for k,v in node.items() if k != 'id'})
@@ -148,30 +152,30 @@ class SqlGraph():
     def _add_node_source(self, dest_id, source, *, seq=None, dest_col=None):
         seq_id = f'.[{seq}]' if seq else ''
         additional_attributes = {}
-        if type(source) == _src.ColumnSource and type(source.table) == _src.TableSource:
+        if type(source) == mdl.ColumnSource and type(source.table) == mdl.TableSource:
             if source.table.qualified_name not in self.tables:
                 for c, cs in source.table.columns.items():
                     if cs:
-                        self._add_column_source(source.table.qualified_name, c, cs)
+                        self._add_column(source.table.id, c, cs)
                 self.tables[source.table.qualified_name] = source.table
             additional_attributes = {'table_type': source.table.type}
             source.table = source.table.qualified_name
         
-        if type(source) == _src.ColumnSource:
+        if type(source) == mdl.ColumnSource:
             src_id =  f'{source.table}.{source.column}'
-        elif type(source) == _src.StructSource:
+        elif type(source) == mdl.StructSource:
             src_id =  f'{dest_id}{seq_id}.{source.name}'
-        elif type(source) == _src.ConstantSource:
+        elif type(source) == mdl.ConstantSource:
             src_id = f'{dest_id}{seq_id}.constant'
-        elif type(source) == _src.TransformSource:
+        elif type(source) == mdl.TransformSource:
             src_id = f'{dest_id}{seq_id}.{source.transform}'
-        elif type(source) == _src.CompositeSource:
+        elif type(source) == mdl.CompositeSource:
             src_id = f'{dest_id}{seq_id}.composite'
-        elif type(source) == _src.UnionSource:
+        elif type(source) == mdl.UnionSource:
             src_id = f'{dest_id}{seq_id}.union'
-        elif type(source) == _src.Source:
+        elif type(source) == mdl.Source:
             src_id = f'{dest_id}{seq_id}.source'
-        elif type(source) == _src.UnknownSource:
+        elif type(source) == mdl.UnknownSource:
             src_id = f'{dest_id}{seq_id}.unknown'
         else:
             raise ValueError(f'need to add support for {type(source)} [{dest_id}]')
