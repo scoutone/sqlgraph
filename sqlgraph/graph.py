@@ -11,6 +11,18 @@ DISPLAY_SETTINGS = {
     'transform': {
         'label_attribute': 'transform',
         'style': 'filled',
+        'fillcolor': '#ffb366',
+        'shape': 'hexagon'
+    },
+    'conditional': {
+        'label': 'COND',
+        'style': 'filled',
+        'fillcolor': '#CCCCFF',
+        'shape': 'hexagon'
+    },
+    'comparison': {
+        'label_attribute': 'name',
+        'style': 'filled',
         'fillcolor': '#CCCCFF',
         'shape': 'hexagon'
     },
@@ -149,17 +161,17 @@ class SqlGraph():
     def _add_edge(self, src_node, dest_node, **attributes):
         self.g.add_edge(src_node, dest_node, **attributes)
         
-    def _add_node_source(self, dest_id, source, *, seq=None, dest_col=None):
+    def _add_node_source(self, dest_id, source, *, seq=None, edge_label=None):
         seq_id = f'.[{seq}]' if seq else ''
         additional_attributes = {}
         if type(source) == mdl.ColumnSource and type(source.table) == mdl.TableSource:
-            if source.table.qualified_name not in self.tables:
-                for c, cs in source.table.columns.items():
-                    if cs:
-                        self._add_column(source.table.id, c, cs)
-                self.tables[source.table.qualified_name] = source.table
+            if source.table.id not in self.tables:
+                for c in source.table.columns:
+                    if _type(source.table) == TableSource:
+                        self._add_column(source.table.id, c, source.table.sources[c])
+                self.tables[source.table.id] = source.table
             additional_attributes = {'table_type': source.table.type}
-            source.table = source.table.qualified_name
+            source.table = source.table.id
         
         if type(source) == mdl.ColumnSource:
             src_id =  f'{source.table}.{source.column}'
@@ -173,6 +185,10 @@ class SqlGraph():
             src_id = f'{dest_id}{seq_id}.composite'
         elif type(source) == mdl.UnionSource:
             src_id = f'{dest_id}{seq_id}.union'
+        elif type(source) == mdl.ConditionalSource:
+            src_id = f'{dest_id}{seq_id}.cond'
+        elif type(source) == mdl.ComparisonSource:
+            src_id = f'{dest_id}{seq_id}.cmp'
         elif type(source) == mdl.Source:
             src_id = f'{dest_id}{seq_id}.source'
         elif type(source) == mdl.UnknownSource:
@@ -188,14 +204,35 @@ class SqlGraph():
                 
         self._add_node(src_node)
         
-        self._add_edge(src_id, dest_id, notes=source.notes, seq=seq)
+        edge_attrs = {
+            'seq': seq,
+            'notes': source.notes,
+        }
+        if edge_label:
+            edge_attrs['label'] = edge_label
+        self._add_edge(src_id, dest_id, **edge_attrs)
         
         if hasattr(source, 'sources'):
             for i in range(len(source.sources)):
-                self._add_node_source(src_id, source.sources[i], seq=i)
+                self._add_node_source(
+                    src_id, 
+                    source.sources[i], 
+                    seq=i, 
+                    edge_label=f'[{i}]' if len(source.sources) > 1 else None
+                )
         
         if hasattr(source, 'source'):
             self._add_node_source(src_id, source.source)
+            
+        if _type(source) == mdl.ConditionalSource:
+            self._add_node_source(src_id, source.condition, seq=0, edge_label='IF')
+            self._add_node_source(src_id, source.true_value, seq=1, edge_label='THEN')
+            self._add_node_source(src_id, source.false_value, seq=2, edge_label='ELSE')
+            
+        if _type(source) == mdl.ComparisonSource:
+            self._add_node_source(src_id, source.left, seq=0, edge_label='LEFT')
+            self._add_node_source(src_id, source.right, seq=1, edge_label='RIGHT')
+            
     
     # def get_column_sources(self, table, column, *, type='column', table_groups=None, return_nodes=False):
     #     return self.get_sources(

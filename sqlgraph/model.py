@@ -152,6 +152,43 @@ class ColumnSource(Source):
         }
         d.update({k: v for k,v in super().to_dict().items() if k not in d})
         return d
+
+class ComparisonSource(Source):
+    def __init__(self, name, left, right, **kwargs):
+        Source.__init__(self, **kwargs)
+        self.name = name
+        self.left = left
+        self.right = right
+        
+    def to_dict(self):
+        d = {
+            'type': 'comparison',
+            'name': self.name,
+            'left': self.left.to_dict(),
+            'right': self.right.to_dict()
+        }
+        d.update({k: v for k,v in super().to_dict().items() if k not in d})
+        return d
+        
+       
+    
+class ConditionalSource(Source):
+    def __init__(self, condition, true_value, false_value=None, **kwargs):
+        Source.__init__(self, **kwargs)
+        self.condition = condition
+        self.true_value = true_value
+        self.false_value = false_value if false_value else ConstantSource('NULL')
+        
+    def to_dict(self):
+        d = {
+            'type': 'conditional',
+            'condition': self.condition.to_dict(),
+            'true_value': self.true_value.to_dict(),
+            'false_value': self.false_value.to_dict()
+        }
+        d.update({k: v for k,v in super().to_dict().items() if k not in d})
+        return d
+    
         
 class StructSource(Source):
     def __init__(self, name, source, **kwargs):

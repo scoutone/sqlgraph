@@ -5,7 +5,7 @@ import logging
 import json
 from sqlgraph import model as mdl
 from uuid import uuid4
-from sqlgraph.model import Table, TableSource
+from sqlgraph.model import Table, TableSource, ColumnSource, ConditionalSource
 
 _type = type
 
@@ -239,7 +239,8 @@ class SqlTrace():
                 if '*' in t.named_selects:
                     for src in self.get_select_sources(t).values():
                         trc = self.trace_table_structure(src, name=name)
-                        columns.update(trc.columns)
+                        for c in trc.columns:
+                            columns[c] = ColumnSource(trc, c)
                         
                 for col_name, col_val in zip(t.named_selects, t.selects):
                     if col_name != '*':
@@ -274,7 +275,7 @@ class SqlTrace():
                                 for t in uts
                             ]
                         )
-                        for c in uts[0].columns.keys()
+                        for c in uts[0].columns
                     }, 
                     type='union'
                 )
@@ -299,6 +300,8 @@ class SqlTrace():
                 return {}
             else:
                 raise ValueError(f'unhandled table structure: [{_type(t)}]: {t}')
+        
+        
         
          
         def trace_column(self, column):
@@ -408,7 +411,7 @@ class SqlTrace():
             return r
         
          
-        def trace_function_call(self, d):
+        def trace_anonymous(self, d):
             name = d.name or d.key.upper()
             params = list(d.expressions) if d.expressions else [d.args['this']]
             
@@ -439,10 +442,16 @@ class SqlTrace():
                 return mdl.TransformSource(f'TIME_TO_STR({args})', self.trace(d.args['this']))
             elif name.lower() == 'try_cast':
                 return mdl.TransformSource('TRY_CAST', d.expressions[0])
+            elif name.lower() == 'iff':
+                return mdl.ConditionalSource(
+                    self.trace(d.expressions[0]), 
+                    self.trace(d.expressions[1]), 
+                    self.trace(d.expressions[2]) if len(d.expressions) > 2 else None
+                )
             elif len(params) == 1:
                 return mdl.TransformSource(name, self.trace(params[0]))
             
-            return mdl.UnknownSource(f'dot: {d}')
+            return mdl.UnknownSource(f'[Anonymous]: {d}')
         
          
         def trace_coalesce(self, coalesce):
@@ -463,6 +472,21 @@ class SqlTrace():
                     for e in struct.expressions
                 ]
             )
+            
+        def trace_conditional(self, e):
+            if _type(e) == exp.If:
+                raise ValueError('not implemented')
+            elif _type(e) == exp.Case:
+                src = self.trace(e.args.get('default'))
+                for iff in reversed(e.args['ifs']):
+                    src = ConditionalSource(
+                        self.trace(iff.args['this']), 
+                        self.trace(iff.args['true']), 
+                        src
+                    )
+                return src
+            else:
+                raise ValueError(f'unhandled: {e}')
         
          
         def trace(self, e):
@@ -480,10 +504,14 @@ class SqlTrace():
                 return self.trace_coalesce(e)
             elif type(e) == exp.Struct:
                 return self.trace_struct(e)
+            elif type(e) == exp.Case:
+                return self.trace_conditional(e)
             elif type(e) == exp.DPipe:
                 return self.trace_dpipe(e)
             elif type(e) == exp.Dot:
-                return self.trace_function_call(e.args['expression'])
+                return self.trace(e.args['expression'])
+            elif type(e) == exp.Anonymous:
+                return self.trace_anonymous(e)
             elif type(e) in [exp.Trim, exp.Max, exp.Upper, exp.Substring, exp.SplitPart, exp.TimeToStr]:
                 return self.trace_function_call(e)
             elif type(e) == exp.Star:
@@ -505,24 +533,11 @@ class SqlTrace():
                 return mdl.TransformSource('LOWER', self.trace(e.args['this']))
             elif type(e) == exp.Not:
                 return mdl.TransformSource('NOT', self.trace(e.args['this']))
-            elif type(e) in [exp.EQ]:
-                return mdl.TransformSource(
+            elif type(e) in [exp.EQ, exp.GT, exp.LT, exp.Is]:
+                return mdl.ComparisonSource(
                     e.__class__.__name__.upper(), 
-                    [
-                        self.trace(e.left), 
-                        self.trace(e.right)
-                    ]
+                    self.trace(e.left), 
+                    self.trace(e.right)
                 )
-            elif type(e) == exp.Is:
-                if type(e.right) == exp.Null:
-                    return mdl.TransformSource('IS NULL', [self.trace(e.left)])
-                else:
-                    return mdl.TransformSource(
-                        e.__class__.__name__.upper(), 
-                        [
-                            self.trace(e.left), 
-                            self.trace(e.right)
-                        ]
-                    )
             else:
                 return mdl.UnknownSource(f'[{type(e).__name__}] {e}')
