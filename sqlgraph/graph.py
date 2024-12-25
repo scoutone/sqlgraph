@@ -3,7 +3,7 @@ import networkx as nx
 from sqlgraph import model as mdl
 import textwrap
 from copy import deepcopy
-from sqlgraph.model import TableSource
+from sqlgraph.model import TableSource, Table
 
 _type = type
 
@@ -52,8 +52,8 @@ DISPLAY_SETTINGS = {
     }
 }
 
-
 class SqlGraph():
+
     def __init__(self, tables=None, *, table_group=None):
         self.g = DiGraph()
         self.tables = {}
@@ -91,6 +91,42 @@ class SqlGraph():
                     filter_edge=lambda x,y: str([x,y]) in included_edges
                 )
             )
+        
+    @classmethod
+    def filter_graph(cls, g, node_filter=None, edge_filter=None):
+        fg = g.copy()
+        
+        if edge_filter:
+            for edge in list(g.edges):
+                if not edge_filter(g, *edge, **g.edges[*edge]):
+                    fg.remove_edge(*edge)
+        
+        if node_filter:
+            for node_id in list(fg.nodes):
+                node_attrs = fg.nodes[node_id]
+                if not node_filter(g, node_id, **node_attrs):
+                    in_edges = list(fg.in_edges(node_id))
+                    out_edges = list(fg.out_edges(node_id))
+                    for in_edge in in_edges:
+                        for out_edge in out_edges:
+                            fg.add_edge(in_edge[0], out_edge[1])
+                    for in_edge in in_edges:
+                        fg.remove_edge(*in_edge)
+                    for out_edge in out_edges:
+                        fg.remove_edge(*out_edge)
+                    fg.remove_node(node_id)
+                else:
+                    print(f'keep {node_id}')
+        return fg
+    
+    def filter(self, node_filter=None, edge_filter=None):
+        sg = SqlGraph()
+        sg.g = SqlGraph.filter_graph(
+            self.g,
+            node_filter,
+            edge_filter
+        )
+        return sg
 
     def get_nodes_in_groups(self, table_groups):
         if table_groups and type(table_groups) != list:
@@ -116,7 +152,7 @@ class SqlGraph():
     def add_table(self, table, table_group=None):
         for column in table.columns:
             src = table.sources[column] if _type(table) == TableSource else None
-            self._add_column(table.id, column, src)
+            self._add_column(table, column, src)
             
         if table_group:
             self.add_table_group(table_group, table.name)
@@ -139,11 +175,12 @@ class SqlGraph():
             node.update(display_settings)
         return node
                 
-    def _add_column(self, table_id, column, source):
+    def _add_column(self, table, column, source):
         node = {
-            'id': f'{table_id}.{column}',
+            'id': f'{table.id}.{column}',
             'type': 'column',
-            'table': table_id,
+            'table': table.id,
+            'table_type': table.type,
             'column': column,
             'mapped': True
         }
@@ -164,14 +201,21 @@ class SqlGraph():
     def _add_node_source(self, dest_id, source, *, seq=None, edge_label=None):
         seq_id = f'.[{seq}]' if seq else ''
         additional_attributes = {}
-        if type(source) == mdl.ColumnSource and type(source.table) == mdl.TableSource:
-            if source.table.id not in self.tables:
-                for c in source.table.columns:
-                    if _type(source.table) == TableSource:
-                        self._add_column(source.table.id, c, source.table.sources[c])
-                self.tables[source.table.id] = source.table
-            additional_attributes = {'table_type': source.table.type}
-            source.table = source.table.id
+        if type(source) == mdl.ColumnSource:
+            if isinstance(source.table, Table):
+                if source.table.id not in self.tables:
+                    for c in source.table.columns:
+                        self._add_column(
+                            source.table, 
+                            c, 
+                            source.table.sources[c] if _type(source.table) == TableSource else None
+                        )
+                    self.tables[source.table.id] = source.table
+                additional_attributes = {'table_type': source.table.type}
+                source.table = source.table.id
+            else:
+                additional_attributes = {'table_type': 'table'}
+                print('pause')
         
         if type(source) == mdl.ColumnSource:
             src_id =  f'{source.table}.{source.column}'

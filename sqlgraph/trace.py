@@ -156,7 +156,7 @@ class SqlTrace():
         
         def trace_table(self, tbl, name=None):
             comment_mappings = self.get_comment_mappings(tbl)
-            return self.trace_table_structure(tbl, name=name)
+            return self.trace_table_structure(tbl, name=name, type='table')
             # mappings = {}
             #
             # for tk, tv in traced.items():
@@ -308,7 +308,7 @@ class SqlTrace():
             if 'table' in column.args:
                 src = self.get_table(column.parent_select, column.args['table'])
                 if type(src) == exp.Table:
-                    return mdl.ColumnSource(src.name, column.name)
+                    return mdl.ColumnSource(self.get_columns_for_table(src, src.name), column.name)
                 else:
                     ts = self.trace_table_structure(src)
                     if column.name == '*':

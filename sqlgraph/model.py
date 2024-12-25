@@ -142,6 +142,8 @@ class ColumnSource(Source):
     def __init__(self, table, column, **kwargs):
         Source.__init__(self, **kwargs)
         self.table = table
+        if type(table) == str:
+            print('pause')
         self.column = column
         
     def to_dict(self):
