@@ -38,7 +38,7 @@ class SqlTrace():
 
         
     @classmethod
-    def trace_sql(cls, sql, name=None, *, dialect=None, schema=None, db=None, catalog=None):
+    def trace_sql(cls, sql, name=None, *, dialect=None, schema=None, db=None, catalog=None, tracers=None):
         if type(sql) == str:
             if not name:
                 raise ValueError('name is required for single SQL statement')
@@ -49,12 +49,12 @@ class SqlTrace():
         for n, s in sql.items():
             tbl = mdl.Table(n, None, db, catalog)
             t = parse_one(s, dialect=dialect)
-            tables[n] = cls.Tracer(schema=schema).trace_table(t, tbl.id)
+            tables[n] = cls.Tracer(schema=schema, tracers=tracers).trace_table(t, tbl.id)
             
         return SqlTrace(tables)
         
     @classmethod
-    def trace_file(cls, file, *, name=None, dialect=None, schema=None, db=None, catalog=None):
+    def trace_file(cls, file, *, name=None, **kwargs):
         if not name:
             name = os.path.basename(file).rsplit('.', 1)[0]
         with open(file) as f:
@@ -62,14 +62,11 @@ class SqlTrace():
             return cls.trace_sql(
                 sql, 
                 name,
-                dialect=dialect,
-                schema=schema,
-                db=db,
-                catalog=catalog
+                **kwargs
             )
     
     @classmethod
-    def trace_directory(cls, directory, *, models=None, excluded_models=None, dialect=None, schema=None, db=None, catalog=None):
+    def trace_directory(cls, directory, *, models=None, excluded_models=None, **kwargs):
         tables = {}
         for root, dirs, files in os.walk(directory):
             for file in files:
@@ -85,10 +82,7 @@ class SqlTrace():
                     cls.trace_file(
                         os.path.join(root, file), 
                         name=model, 
-                        dialect=dialect, 
-                        schema=schema,
-                        db=db,
-                        catalog=catalog
+                        **kwargs
                     ).tables
                 )
         return SqlTrace(tables)
@@ -103,9 +97,10 @@ class SqlTrace():
     
     class Tracer():
         
-        def __init__(self, *, schema=None):
+        def __init__(self, *, schema=None, tracers=None):
             self.schema = schema
             self.column_cache = {}
+            self.tracers = tracers or {}
         
         
         def get_comments(self, tbl):
@@ -414,49 +409,6 @@ class SqlTrace():
                     sources = [r, et]
                 r = mdl.TransformSource('CONCAT', sources)
             return r
-        
-         
-        def trace_anonymous(self, d):
-            name = d.name or d.key.upper()
-            params = list(d.expressions) if d.expressions else [d.args['this']]
-            
-            if name.lower() == 'phone_priority':
-                priority = {'1': 'first', '2': 'second', '3': 'third'}[str(params[0])]
-                return mdl.TransformSource(
-                    'PHONE_PRIORITY',
-                    [self.trace(p) for p in params[1:]],
-                    notes=f'{priority} populated value'
-                )
-            elif name.lower() == 'max_length':
-                return mdl.TransformSource(f'MAX_LENGTH({params[1]})', self.trace(params[0]))
-            elif name.lower() == 'join_valued':
-                return mdl.TransformSource('JOIN_VALUED', [self.trace(p) for p in params[1:]])
-            elif name.lower() == 'substring':
-                args = str(d.args['start'])
-                if 'length' in d.args:
-                    args = args+','+str(d.args['length'])
-                return mdl.TransformSource(f'SUBSTRING({args})', self.trace(d.args['this']))
-            elif name.lower() == 'splitpart':
-                args = str(d.args['delimiter'])+','+str(d.args['part_index'])
-                return mdl.TransformSource(f'SPLIT_PART({args})', self.trace(d.args['this']))
-            elif name.lower() == 'split_max':
-                args = str(d.expressions[1])+','+str(d.expressions[2])
-                return mdl.TransformSource(f'SPLIT_MAX({args})', self.trace(d.expressions[0]))
-            elif name.lower() == 'time_to_str':
-                args = str(d.args['delimiter'])+','+str(d.args['part_index'])
-                return mdl.TransformSource(f'TIME_TO_STR({args})', self.trace(d.args['this']))
-            elif name.lower() == 'try_cast':
-                return mdl.TransformSource('TRY_CAST', d.expressions[0])
-            elif name.lower() == 'iff':
-                return mdl.ConditionalSource(
-                    self.trace(d.expressions[0]), 
-                    self.trace(d.expressions[1]), 
-                    self.trace(d.expressions[2]) if len(d.expressions) > 2 else None
-                )
-            elif len(params) == 1:
-                return mdl.TransformSource(name, self.trace(params[0]))
-            
-            return mdl.UnknownSource(f'[Anonymous]: {d}')
          
         def trace_function_call(self, d):
             name = d.name or d.key.upper()
@@ -521,8 +473,14 @@ class SqlTrace():
             else:
                 raise ValueError(f'unhandled: {e}')
         
-         
         def trace(self, e):
+            tracer = self.tracers.get(type(e))
+            if tracer:
+                return tracer(self, e)
+            else:
+                return self._trace(e)
+         
+        def _trace(self, e):
             if type(e) == exp.Identifier:
                 return self.trace(e.parent)
             elif type(e) == exp.Column:
@@ -539,10 +497,10 @@ class SqlTrace():
                 return self.trace_conditional(e)
             elif type(e) == exp.DPipe:
                 return self.trace_dpipe(e)
+            elif type(e) == exp.Array:
+                return mdl.TransformSource('ARRAY', [self.trace(ex) for ex in e.expressions])
             elif type(e) == exp.Dot:
                 return self.trace(e.args['expression'])
-            elif type(e) == exp.Anonymous:
-                return self.trace_anonymous(e)
             elif type(e) in [exp.Trim, exp.Max, exp.Upper, exp.Substring, exp.SplitPart, exp.TimeToStr, exp.JSONExtract]:
                 return self.trace_function_call(e)
             elif type(e) == exp.Star:
