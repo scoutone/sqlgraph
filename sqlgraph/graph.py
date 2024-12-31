@@ -276,14 +276,15 @@ class SqlGraph():
         
         if hasattr(source, 'source'):
             self._add_node_source(src_id, source.source)
-    
-    # def get_column_sources(self, table, column, *, type='column', table_groups=None, return_nodes=False):
-    #     return self.get_sources(
-    #         f'{table}.{column}', 
-    #         type=type, 
-    #         table_groups=table_groups, 
-    #         return_nodes=return_nodes
-    #     )
+
+        if _type(source) == mdl.ComparisonSource:
+            self._add_node_source(src_id, source.left, edge_label='LEFT')
+            self._add_node_source(src_id, source.right, edge_label='RIGHT')
+
+        if _type(source) == mdl.ConditionalSource:
+            self._add_node_source(src_id, source.condition, edge_label='IF')
+            self._add_node_source(src_id, source.true_value, edge_label='THEN')
+            self._add_node_source(src_id, source.false_value, edge_label='ELSE')
         
     def get_source_graph(self, node_id, table_groups=None):
         if table_groups and _type(table_groups) != list:
