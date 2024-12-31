@@ -1,32 +1,5 @@
+from sqlgraph.model import Table
 import abc
-
-class Table():
-    def __init__(self, table, columns, db=None, catalog=None):
-        self.table = table
-        self.db = db
-        self.catalog = catalog
-        self.columns = columns
-        
-    def __str__(self):
-        s = self.table
-        if self.db:
-            s = self.db + '.' + s
-            if self.catalog:
-                s = self.catalog + '.' + s
-        return s
-    
-    def __repr__(self):
-        return 'Table['+self.__str__()+']'
-    
-    def __eq__(self, other):
-        return isinstance(other, Table) and \
-               self.table == other.table and \
-               self.db == other.db and \
-               self.catalog == other.catalog and \
-               self.columns == other.columns
-    
-    def __ne__(self, other):
-        return not self.__eq__(other)
 
 class Schema(object):
     __metaclass__ = abc.ABCMeta

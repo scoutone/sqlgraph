@@ -1,8 +1,12 @@
 from sqlgraph.schema import DictSchema, Table
 import unittest
 
-
 class DictSchemaTests(unittest.TestCase):
+    
+    def assert_tables_equal(self, expected, actual, msg=None):
+        self.assertEqual(expected, actual, msg)
+        self.assertEqual(expected.columns, actual.columns, msg)
+    
     def test_fully_qualified(self):
         schema = DictSchema(
             {
@@ -16,9 +20,9 @@ class DictSchemaTests(unittest.TestCase):
                 }
             }
         )
-
-        self.assertEqual(
-            Table('test_table', ['column1', 'column2'], 'test_db', 'test_catalog'), 
+        
+        self.assert_tables_equal(
+            Table('test_table', ['column1', 'column2'], 'test_db', 'test_catalog'),
             schema.get_table('test_table', 'test_db', 'test_catalog')
         )
         
@@ -52,7 +56,7 @@ class DictSchemaTests(unittest.TestCase):
             }
         )
         
-        self.assertEqual(
+        self.assert_tables_equal(
             Table('test_table2', ['column1', 'column2'], 'test_db', 'test_catalog1'),
             schema.get_table('test_table2')
         )
@@ -88,7 +92,4 @@ class DictSchemaTests(unittest.TestCase):
         )
         
         with self.assertRaises(ValueError):
-            self.assertEqual(
-                ['column1', 'column2'], 
-                schema.get_table('test_table')
-            )
+            schema.get_table('test_table')

@@ -5,6 +5,8 @@ import networkx as nx
 import time
 from networkx.drawing.nx_agraph import graphviz_layout
 from sqlgraph.schema import DictSchema
+from test.dialect import PostgresExtended
+import os
  
 class LayoutTest(unittest.TestCase):
   
@@ -59,18 +61,112 @@ class LayoutTest(unittest.TestCase):
 
         schema = DictSchema(TABLES)
         
-        traced = SqlTrace.trace_sql(SQLs, dialect='postgres', schema=schema)
+        traced = SqlTrace.trace_sql(SQLs, dialect='postgres', schema=schema, db='test_schema', catalog='test_db')
         
-        for table, columns in traced.tables.items():
-            print(table)
-            for field, source in columns.items():
-                print(f'{field}: {json.dumps(source.to_dict(), indent=2)}')
-                print()
+        actual = {
+            table_name: table_source.to_dict()
+            for table_name, table_source in traced.tables.items()
+        }
+        
+        print(json.dumps(actual, indent=2))
             
-        g = traced.to_graph(include_intermediate_tables=True)
-        
+        g = traced.to_graph()
 
         A = g.to_agraph()        
-        A.draw("test.png", prog="dot")
+        A.draw("test_layout.png", prog="dot")
+        
+    def test_layout_union(self):
+        TABLES = {
+            None: {
+                None: {
+                    'cats': [
+                        'name',
+                        'age'
+                    ],
+                    'dogs': [
+                        'name',
+                        'age'
+                    ],
+                    'rats': [
+                        'name',
+                        'age'
+                    ]
+                }
+            }
+        }
+        SQLs = {
+            'pets': """\
+              SELECT 'cat' as type, * FROM cats
+              UNION ALL
+              SELECT 'dog' as type, * FROM dogs
+              UNION ALL
+              SELECT 'rat' as type, * FROM rats
+            """
+        }
+        
+        schema = DictSchema(TABLES)
+        traced = SqlTrace.trace_sql(SQLs, dialect='postgres', schema=schema)
+        
+        actual = {
+            table_name: table_source.to_dict()
+            for table_name, table_source in traced.tables.items()
+        }
+        
+        print(json.dumps(actual, indent=2))
+            
+        g = traced.to_graph()
+
+        A = g.to_agraph()        
+        A.draw("test_layout_union.png", prog="dot")
+        
+    def test_layout_struct(self):
+        TABLES = {
+            'test_db': {
+                'test_schema': {
+                    'name_table': [
+                        'person_id',
+                        'first_name',
+                        'last_name',
+                    ]
+                }
+            }
+        }
+        
+        SQLs = {
+            'name_test': """\
+              WITH names AS (
+                SELECT
+                  JSON_BUILD_OBJECT(
+                    'first_name', first_name,
+                    'last_name', last_name
+                  ) as name
+                FROM name_table
+              ),
+              intermediate AS (
+                SELECT
+                  name
+                FROM names
+              )
+              SELECT
+                name->'first_name' as fn,
+                name->'last_name' as ln
+              FROM intermediate
+            """
+        }
         
         
+        schema = DictSchema(TABLES)
+        traced = SqlTrace.trace_sql(SQLs, dialect=PostgresExtended, schema=schema)
+        
+        actual = {
+            table_name: table_source.to_dict()
+            for table_name, table_source in traced.tables.items()
+        }
+        
+        print(json.dumps(actual, indent=2))
+            
+        g = traced.to_graph()
+
+        A = g.to_agraph()       
+        print(os.getcwd()) 
+        A.draw("test_layout_struct.png", prog="dot")     

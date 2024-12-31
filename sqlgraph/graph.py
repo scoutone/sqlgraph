@@ -1,14 +1,27 @@
 from networkx.classes.digraph import DiGraph
 import networkx as nx
-from sqlgraph import source as _src
+from sqlgraph import model as mdl
 import textwrap
 from copy import deepcopy
+from sqlgraph.model import TableSource, Table
 
 _type = type
 
 DISPLAY_SETTINGS = {
     'transform': {
         'label_attribute': 'transform',
+        'style': 'filled',
+        'fillcolor': '#ffb366',
+        'shape': 'hexagon'
+    },
+    'conditional': {
+        'label': 'COND',
+        'style': 'filled',
+        'fillcolor': '#CCCCFF',
+        'shape': 'hexagon'
+    },
+    'comparison': {
+        'label_attribute': 'name',
         'style': 'filled',
         'fillcolor': '#CCCCFF',
         'shape': 'hexagon'
@@ -18,6 +31,12 @@ DISPLAY_SETTINGS = {
         'style': 'filled',
         'fillcolor': '#66ffcc',
         'shape': 'hexagon'
+    },
+    'struct': {
+        'label': 'STRUCT',
+        'style': 'filled',
+        'fillcolor': '#767ece',
+        'shape': 'box'
     },
     'column': {
         'shape': 'box',
@@ -39,14 +58,15 @@ DISPLAY_SETTINGS = {
     }
 }
 
-
 class SqlGraph():
-    def __init__(self, mappings=None, *, table_group=None, include_intermediate_tables=False):
+
+    def __init__(self, tables=None, *, table_group=None):
         self.g = DiGraph()
-        self.include_intermediate_tables = include_intermediate_tables
         self.tables = {}
-        if mappings:
-            self.add_mappings(mappings, table_group=table_group) 
+        if tables:
+            for table in tables.values():
+                self.add_table(table, table_group)
+            #self.add_mappings(mappings, table_group=table_group) 
         
     def add_all(self, other):
         self.g = nx.compose(self.g, other.graphs)
@@ -77,6 +97,42 @@ class SqlGraph():
                     filter_edge=lambda x,y: str([x,y]) in included_edges
                 )
             )
+        
+    @classmethod
+    def filter_graph(cls, g, node_filter=None, edge_filter=None):
+        fg = g.copy()
+        
+        if edge_filter:
+            for edge in list(g.edges):
+                if not edge_filter(g, *edge, **g.edges[*edge]):
+                    fg.remove_edge(*edge)
+        
+        if node_filter:
+            for node_id in list(fg.nodes):
+                node_attrs = fg.nodes[node_id]
+                if not node_filter(g, node_id, **node_attrs):
+                    in_edges = list(fg.in_edges(node_id))
+                    out_edges = list(fg.out_edges(node_id))
+                    for in_edge in in_edges:
+                        for out_edge in out_edges:
+                            fg.add_edge(in_edge[0], out_edge[1])
+                    for in_edge in in_edges:
+                        fg.remove_edge(*in_edge)
+                    for out_edge in out_edges:
+                        fg.remove_edge(*out_edge)
+                    fg.remove_node(node_id)
+                else:
+                    print(f'keep {node_id}')
+        return fg
+    
+    def filter(self, node_filter=None, edge_filter=None):
+        sg = SqlGraph()
+        sg.g = SqlGraph.filter_graph(
+            self.g,
+            node_filter,
+            edge_filter
+        )
+        return sg
 
     def get_nodes_in_groups(self, table_groups):
         if table_groups and type(table_groups) != list:
@@ -99,12 +155,20 @@ class SqlGraph():
                 if type(tables) != dict or node['column'] in tables[node['table']]:
                     node.setdefault('groups', []).append(table_group)
         
-    def add_mappings(self, mappings, *, table_group=None):
-        for table, cols in mappings.items():
-            for column, source in cols.items():
-                self._add_column_source(table, column, source)
+    def add_table(self, table, table_group=None):
+        for column in table.columns:
+            src = table.sources[column] if _type(table) == TableSource else None
+            self._add_column(table, column, src)
+            
         if table_group:
-            self.add_table_group(table_group, mappings.keys())
+            self.add_table_group(table_group, table.name)
+        
+    # def add_mappings(self, mappings, *, table_group=None):
+    #     for table, cols in mappings.items():
+    #         for column, source in cols.items():
+    #             self._add_column_source(table, column, source)
+    #     if table_group:
+    #         self.add_table_group(table_group, mappings.keys())
             
     def _apply_display_settings(self, node):
         display_settings = DISPLAY_SETTINGS.get(node['type'])
@@ -117,56 +181,71 @@ class SqlGraph():
             node.update(display_settings)
         return node
                 
-    def _add_column_source(self, table, column, source):
+    def _add_column(self, table, column, source):
         node = {
             'id': f'{table}.{column}',
             'type': 'column',
-            'table': table,
+            'table': table.id,
             'column': column,
             'mapped': True
         }
         
         node = self._apply_display_settings(node)
         node_id = self._add_node(node)
-        self._add_node_source(node_id, source)
+        
+        if source:
+            self._add_node_source(node_id, source)
 
     def _add_node(self, node):
+        print(f'ADD NODE: {node["id"]}')
         self.g.add_node(node['id'], **{k: v for k,v in node.items() if k != 'id'})
         return node['id']
     
     def _add_edge(self, src_node, dest_node, **attributes):
+
+        print(f'ADD EDGE: {src_node}->{dest_node}')
         self.g.add_edge(src_node, dest_node, **attributes)
         
-    def _add_node_source(self, dest_id, source, *, seq=None, dest_col=None):
+    def _add_node_source(self, dest_id, source, *, seq=None, edge_label=None):
+        if type(source) == mdl.PathSource:
+            return self._add_node_source(dest_id, source.source, edge_label=source.path)
+
         seq_id = f'.[{seq}]' if seq else ''
         additional_attributes = {}
-        if type(source) == _src.ColumnSource and type(source.table) == _src.TableSource:
-            if self.include_intermediate_tables:  
-                if source.table.qualified_name not in self.tables:
-                    for c, cs in source.table.columns.items():
-                        self._add_column_source(source.table.qualified_name, c, cs)
-                    self.tables[source.table.qualified_name] = source.table
+        if type(source) == mdl.ColumnSource:
+            if isinstance(source.table, Table):
+                if source.table.id not in self.tables:
+                    for c in source.table.columns:
+                        self._add_column(
+                            source.table, 
+                            c, 
+                            source.table.sources[c] if _type(source.table) == TableSource else None
+                        )
+                    self.tables[source.table.id] = source.table
                 additional_attributes = {'table_type': source.table.type}
-                source.table = source.table.qualified_name
+                source.table = source.table.id
             else:
-                while type(source) == _src.ColumnSource and type(source.table) == _src.TableSource:
-                    source = source.table.columns[source.column]
+                additional_attributes = {'table_type': 'table'}
         
-        if type(source) == _src.ColumnSource:
+        if type(source) == mdl.ColumnSource:
             src_id =  f'{source.table}.{source.column}'
-        elif type(source) == _src.StructSource:
-            src_id =  f'{dest_id}{seq_id}.{source.name}'
-        elif type(source) == _src.ConstantSource:
+        elif type(source) == mdl.ConstantSource:
             src_id = f'{dest_id}{seq_id}.constant'
-        elif type(source) == _src.TransformSource:
+        elif type(source) == mdl.TransformSource:
             src_id = f'{dest_id}{seq_id}.{source.transform}'
-        elif type(source) == _src.CompositeSource:
+        elif type(source) == mdl.CompositeSource:
             src_id = f'{dest_id}{seq_id}.composite'
-        elif type(source) == _src.UnionSource:
-            src_id = f'{dest_id}{seq_id}.union' + (f'.{source.group_id}' if source.group_id else '')
-        elif type(source) == _src.Source:
+        elif type(source) == mdl.UnionSource:
+            src_id = f'{dest_id}{seq_id}.union'
+        elif type(source) == mdl.ConditionalSource:
+            src_id = f'{dest_id}{seq_id}.cond'
+        elif type(source) == mdl.ComparisonSource:
+            src_id = f'{dest_id}{seq_id}.cmp'
+        elif type(source) == mdl.StructSource:
+            src_id =  f'{dest_id}{seq_id}.struct'
+        elif type(source) == mdl.Source:
             src_id = f'{dest_id}{seq_id}.source'
-        elif type(source) == _src.UnknownSource:
+        elif type(source) == mdl.UnknownSource:
             src_id = f'{dest_id}{seq_id}.unknown'
         else:
             raise ValueError(f'need to add support for {type(source)} [{dest_id}]')
@@ -176,14 +255,24 @@ class SqlGraph():
         src_node = {'id': src_id, **src_attributes, **additional_attributes}
         
         src_node = self._apply_display_settings(src_node)
-                
+        
         self._add_node(src_node)
         
-        self._add_edge(src_id, dest_id, notes=source.notes, seq=seq)
+        edge_attrs = {
+            'seq': seq,
+            'notes': source.notes,
+        }
+        if edge_label:
+            edge_attrs['label'] = edge_label
+        self._add_edge(src_id, dest_id, **edge_attrs)
         
         if hasattr(source, 'sources'):
-            for i in range(len(source.sources)):
-                self._add_node_source(src_id, source.sources[i], seq=i)
+            if _type(source.sources) == dict:
+                for sn, ss in source.sources.items():
+                    self._add_node_source(src_id, ss, edge_label=sn)
+            else:
+                for i in range(len(source.sources)):
+                    self._add_node_source(src_id, source.sources[i], seq=i)
         
         if hasattr(source, 'source'):
             self._add_node_source(src_id, source.source)
@@ -331,6 +420,7 @@ class SqlGraph():
         cur_names = []
         for n in list(reversed(nx.shortest_path(g, src_id, dest_id))):
             if g.nodes[n]['type'] == 'struct':
+                raise ValueError('check this')
                 cur_names.append(g.nodes[n]['name'])
             elif g.nodes[n]['type'] == 'column':
                 names = cur_names
@@ -397,6 +487,7 @@ class SqlGraph():
         cur_names = []
         for n in list(reversed(nx.shortest_path(g, src_id, dest_id))):
             if g.nodes[n]['type'] == 'struct':
+                raise ValueError('check this')
                 cur_names.append(g.nodes[n]['name'])
             elif g.nodes[n]['type'] == 'column':
                 names = cur_names
