@@ -570,7 +570,7 @@ class SqlTrace():
                 if _type(e.args['this']) != exp.Array:
                     raise ValueError(f'Unhandled explode: {e.args["this"]}')
                 return mdl.UnionSource(sources=[self.trace(se) for se in e.args['this'].args['expressions']])
-            elif type(e) in [exp.EQ, exp.GT, exp.LT, exp.Is]:
+            elif type(e) in [exp.EQ, exp.GT, exp.LT, exp.Is, exp.NullSafeNEQ, exp.NullSafeEQ]:
                 return mdl.ComparisonSource(
                     e.__class__.__name__.upper(), 
                     self.trace(e.left), 
