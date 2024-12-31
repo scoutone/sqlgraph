@@ -527,9 +527,7 @@ class SqlTrace():
                 return self.trace(e.parent)
             elif type(e) == exp.Column:
                 return self.trace_column(e)
-            elif type(e) == exp.Alias:
-                return self.trace(e.args['this'])
-            elif type(e) == exp.Cast:
+            elif type(e) in [exp.Alias, exp.Cast, exp.Paren]:
                 return self.trace(e.args['this'])
             elif type(e) == exp.Window:
                 return self.trace_window(e)
