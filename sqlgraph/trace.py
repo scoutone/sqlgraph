@@ -526,22 +526,21 @@ class SqlTrace():
                 if _type(e.args['this']) != exp.Array:
                     raise ValueError(f'Unhandled explode: {e.args["this"]}')
                 return mdl.UnionSource(sources=[self.trace(se) for se in e.args['this'].args['expressions']])
+            elif type(e) == exp.Is and type(e.right) == exp.Null:
+                return mdl.TransformSource('IS NULL', [self.trace(e.left)])
+            elif type(e) in [exp.Add, exp.Is]:
+                return mdl.TransformSource(
+                    e.__class__.__name__.upper(),
+                    [
+                        self.trace(e.left), 
+                        self.trace(e.right)
+                    ]
+                )
             elif type(e) in [exp.EQ, exp.GT, exp.LT, exp.Is, exp.NullSafeNEQ, exp.NullSafeEQ]:
                 return mdl.ComparisonSource(
                     e.__class__.__name__.upper(), 
                     self.trace(e.left), 
                     self.trace(e.right)
                 )
-            elif type(e) == exp.Is:
-                if type(e.right) == exp.Null:
-                    return mdl.TransformSource('IS NULL', [self.trace(e.left)])
-                else:
-                    return mdl.TransformSource(
-                        e.__class__.__name__.upper(), 
-                        [
-                            self.trace(e.left), 
-                            self.trace(e.right)
-                        ]
-                    )
             else:
                 return mdl.UnknownSource(f'[{type(e).__name__}] {e}')
