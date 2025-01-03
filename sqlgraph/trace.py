@@ -462,7 +462,10 @@ class SqlTrace():
             if _type(e) == exp.If:
                 raise ValueError('not implemented')
             elif _type(e) == exp.Case:
-                src = self.trace(e.args.get('default'))
+                default = e.args.get('default')
+                if default is None:
+                    default = exp.Null()
+                src = self.trace(default)
                 for iff in reversed(e.args['ifs']):
                     src = mdl.ConditionalSource(
                         self.trace(iff.args['this']), 
@@ -536,7 +539,7 @@ class SqlTrace():
                         self.trace(e.right)
                     ]
                 )
-            elif type(e) in [exp.EQ, exp.GT, exp.LT, exp.Is, exp.NullSafeNEQ, exp.NullSafeEQ]:
+            elif type(e) in [exp.EQ, exp.GT, exp.LT, exp.Is, exp.NullSafeNEQ, exp.NullSafeEQ, exp.RegexpLike]:
                 return mdl.ComparisonSource(
                     e.__class__.__name__.upper(), 
                     self.trace(e.left), 
