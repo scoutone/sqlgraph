@@ -68,9 +68,10 @@ class Source():
         return str(self.to_dict())
         
 class CompositeSource(Source):
-    def __init__(self, sources=[], **kwargs):
+    def __init__(self, sources=[], *, name=None, **kwargs):
         Source.__init__(self, **kwargs)
         self.sources = sources
+        self.name = name
                 
     def as_list(self):
         return self.sources
@@ -78,7 +79,8 @@ class CompositeSource(Source):
     def to_dict(self):
         d = {
             'type': 'composite',
-            'sources':  list([s.to_dict() for s in self.sources])
+            'sources':  list([s.to_dict() for s in self.sources]),
+            'name': self.name
         }
         
         d.update({k: v for k,v in super().to_dict().items() if k not in d})
@@ -118,13 +120,11 @@ class TransformSource(CompositeSource):
         if sources and not type(sources) == list:
             sources = [sources]
             
-        self.transform = transform
-        super().__init__(sources=sources, **kwargs)
+        super().__init__(sources=sources, name=transform, **kwargs)
         
     def to_dict(self):
         d = {
-            'type': 'transform',
-            'transform': self.transform
+            'type': 'transform'
         }
         d.update({k: v for k,v in super().to_dict().items() if k not in d})
         return d

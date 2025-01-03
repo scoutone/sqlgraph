@@ -445,7 +445,8 @@ class SqlTrace():
                     for x in [
                         coalesce.args['this']
                     ]+coalesce.args['expressions']
-                ]
+                ],
+                name='COALESCE'
             )
             
         

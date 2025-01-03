@@ -8,8 +8,14 @@ from sqlgraph.model import TableSource, Table
 _type = type
 
 DISPLAY_SETTINGS = {
+    'composite': {
+        'label_attribute': 'name',
+        'style': 'filled',
+        'fillcolor': '#b0f1b4',
+        'shape': 'hexagon'
+    },
     'transform': {
-        'label_attribute': 'transform',
+        'label_attribute': 'name',
         'style': 'filled',
         'fillcolor': '#ffb366',
         'shape': 'hexagon'
@@ -233,7 +239,7 @@ class SqlGraph():
         elif type(source) == mdl.ConstantSource:
             src_id = f'{dest_id}{seq_id}.constant'
         elif type(source) == mdl.TransformSource:
-            src_id = f'{dest_id}{seq_id}.{source.transform}'
+            src_id = f'{dest_id}{seq_id}.{source.name}'
         elif type(source) == mdl.CompositeSource:
             src_id = f'{dest_id}{seq_id}.composite'
         elif type(source) == mdl.UnionSource:
