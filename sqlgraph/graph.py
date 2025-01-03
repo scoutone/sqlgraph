@@ -186,6 +186,7 @@ class SqlGraph():
             'id': f'{table}.{column}',
             'type': 'column',
             'table': table.id,
+            'table_type': table.type,
             'column': column,
             'mapped': True
         }
