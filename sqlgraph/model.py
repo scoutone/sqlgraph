@@ -32,6 +32,20 @@ class Table():
     def __ne__(self, other):
         return not self.__eq__(other)
     
+    def matches(self, other):
+        if self.name != other.name:
+            return False
+        
+        if self.catalog != None and other.catalog != None and self.catalog != other.catalog:
+            return False
+        
+        if self.db != None and other.db != None and self.db != other.db:
+            return False
+        return True
+    
+    def matches_id(self, other_id):
+        return self.matches(Table.from_id(other_id))
+    
     def to_dict(self):
         d = {
             'type': self.type,
@@ -46,6 +60,18 @@ class Table():
         d['id'] = self.id
         d['columns'] = self.columns
         return d
+    
+    @staticmethod
+    def from_id(table_id, columns=None, type='table'):
+        parts = table_id.split('.')
+        name = parts[-1]
+        catalog = parts[-2] if len(parts) > 1 else None
+        db = parts[-3] if len(parts) > 2 else None
+        return Table(name, columns, db=db, catalog=catalog, type=type)
+    
+    @staticmethod
+    def ids_match(table_id1, table_id2):
+        return Table.from_id(table_id1).matches_id(table_id2)
     
 class Source():
     def __init__(self, *, notes=None, internal=None):

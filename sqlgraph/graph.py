@@ -78,7 +78,7 @@ class SqlGraph():
         self.g = nx.compose(self.g, other.graphs)
         
     @staticmethod
-    def intersects(cls, l1, l2):
+    def intersects(l1, l2):
         return len([l for l in l1 if l in l2]) > 0
 
     @staticmethod
@@ -157,9 +157,11 @@ class SqlGraph():
     def add_table_group(self, table_group, tables):
         for node_id in self.g.nodes:
             node = self.g.nodes[node_id]
-            if node['type'] == 'column' and node['table'] in tables:
-                if type(tables) != dict or node['column'] in tables[node['table']]:
-                    node.setdefault('groups', []).append(table_group)
+            if node['type'] == 'column':
+                for group_table_id in tables:
+                    if Table.ids_match(group_table_id, node['table']):
+                        if type(tables) != dict or node['column'] in tables[group_table_id]:
+                            node.setdefault('groups', []).append(table_group)
         
     def add_table(self, table, table_group=None):
         for column in table.columns:

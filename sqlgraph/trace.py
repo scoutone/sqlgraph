@@ -49,7 +49,10 @@ class SqlTrace():
         for n, s in sql.items():
             tbl = mdl.Table(n, None, db, catalog)
             t = parse_one(s, dialect=dialect)
-            tables[n] = cls.Tracer(schema=schema, tracers=tracers).trace_table(t, tbl.id)
+            tbl = cls.Tracer(schema=schema, tracers=tracers).trace_table(t, n)
+            tbl.db = db
+            tbl.catalog = catalog
+            tables[n] = tbl
             
         return SqlTrace(tables)
         
@@ -274,6 +277,8 @@ class SqlTrace():
                 
                 if not type:
                     type = 'values' if _type(t) == exp.Values else 'select'
+                if not name:
+                    name = type + '_' + str(uuid4())
                 ts = mdl.TableSource(name, columns, type=type)
                 return ts
             elif _type(t) == exp.Table:
