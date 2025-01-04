@@ -27,12 +27,12 @@ class SqlTrace():
     
     def __str__(self):
         s = ''
-        for table, columns in self._mappings.items():
+        for table, table_source in self.tables.items():
             if s:
                 s += '\n\n'
             s += table + '\n'
             s += '------------------\n'
-            for column, source in columns.items():
+            for column, source in table_source.sources.items():
                 s += f'  {column}: {source}\n'
         return s
 
@@ -405,15 +405,22 @@ class SqlTrace():
         
          
         def trace_dpipe(self, p):
-            r = self.trace(p.this)
-            if type(p.expression) not in [exp.Literal]:
-                et = self.trace(p.expression)
-                if type(r) == mdl.TransformSource and r.transform == 'CONCAT':
-                    sources = r.sources + [et]
-                else:
-                    sources = [r, et]
-                r = mdl.TransformSource('CONCAT', sources)
-            return r
+            
+            sources = []
+            left = self.trace(p.left)
+            if _type(left) == mdl.TransformSource and left.name == 'CONCAT':
+                sources.extend(left.sources)
+            else:
+                sources.append(left)
+                
+            right = self.trace(p.right)
+            if _type(right) == mdl.TransformSource and right.name == 'CONCAT':
+                sources.extend(right.sources)
+            else:
+                sources.append(right)
+            
+            return mdl.TransformSource('CONCAT', sources)
+
          
         def trace_function_call(self, d):
             name = d.name or d.key.upper()
