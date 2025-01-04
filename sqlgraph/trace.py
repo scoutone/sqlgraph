@@ -545,7 +545,7 @@ class SqlTrace():
                         self.trace(e.right)
                     ]
                 )
-            elif type(e) in [exp.EQ, exp.GT, exp.LT, exp.Is, exp.NullSafeNEQ, exp.NullSafeEQ, exp.RegexpLike]:
+            elif type(e) in [exp.EQ, exp.GT, exp.LT, exp.Is, exp.NullSafeNEQ, exp.NullSafeEQ, exp.RegexpLike, exp.ILike]:
                 return mdl.ComparisonSource(
                     e.__class__.__name__.upper(), 
                     self.trace(e.left), 
