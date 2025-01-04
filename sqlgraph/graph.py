@@ -241,10 +241,10 @@ class SqlGraph():
             src_id =  f'{source.table}.{source.column}'
         else:
             src_id = f'{dest_id}.source'
-            if seq is not None:
-                src_id += f'.[{seq}]'
             if edge_label is not None:
                 src_id += f'.{edge_label}'
+            elif seq is not None:
+                src_id += f'.[{seq}]'
         
         src_attributes = {k: v for k,v in source.to_dict().items() if k != 'sources'}
         
@@ -268,7 +268,7 @@ class SqlGraph():
                     self._add_node_source(src_id, ss, edge_label=sn)
             else:
                 for i in range(len(source.sources)):
-                    self._add_node_source(src_id, source.sources[i], seq=i)
+                    self._add_node_source(src_id, source.sources[i], seq=i, edge_label=f'[{i}]')
         
         if hasattr(source, 'source'):
             self._add_node_source(src_id, source.source)
