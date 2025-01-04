@@ -219,7 +219,6 @@ class SqlGraph():
         if type(source) == mdl.PathSource:
             return self._add_node_source(dest_id, source.source, edge_label=source.path)
 
-        seq_id = f'.[{seq}]' if seq else ''
         additional_attributes = {}
         if type(source) == mdl.ColumnSource:
             if isinstance(source.table, Table):
@@ -235,29 +234,17 @@ class SqlGraph():
                 source.table = source.table.id
             else:
                 additional_attributes = {'table_type': 'table'}
+                
+        
         
         if type(source) == mdl.ColumnSource:
             src_id =  f'{source.table}.{source.column}'
-        elif type(source) == mdl.ConstantSource:
-            src_id = f'{dest_id}{seq_id}.constant'
-        elif type(source) == mdl.TransformSource:
-            src_id = f'{dest_id}{seq_id}.{source.name}'
-        elif type(source) == mdl.CompositeSource:
-            src_id = f'{dest_id}{seq_id}.composite'
-        elif type(source) == mdl.UnionSource:
-            src_id = f'{dest_id}{seq_id}.union'
-        elif type(source) == mdl.ConditionalSource:
-            src_id = f'{dest_id}{seq_id}.cond'
-        elif type(source) == mdl.ComparisonSource:
-            src_id = f'{dest_id}{seq_id}.cmp'
-        elif type(source) == mdl.StructSource:
-            src_id =  f'{dest_id}{seq_id}.struct'
-        elif type(source) == mdl.Source:
-            src_id = f'{dest_id}{seq_id}.source'
-        elif type(source) == mdl.UnknownSource:
-            src_id = f'{dest_id}{seq_id}.unknown'
         else:
-            raise ValueError(f'need to add support for {type(source)} [{dest_id}]')
+            src_id = f'{dest_id}.source'
+            if seq is not None:
+                src_id += f'.[{seq}]'
+            if edge_label is not None:
+                src_id += f'.{edge_label}'
         
         src_attributes = {k: v for k,v in source.to_dict().items() if k != 'sources'}
         
