@@ -104,6 +104,29 @@ class SqlGraph():
                 )
             )
         
+    @classmethod 
+    def transform_graph(cls, g, edge_transform):
+        tg = nx.DiGraph()
+        for node_id in g.nodes:
+            edge_data = edge_transform(g, node_id, **g.nodes[node_id])
+            if edge_data is not None:
+                tg.add_node(node_id, **g.nodes[node_id])
+                for source_node_id, source_node_attrs, edge_attrs in edge_data:
+                    tg.add_node(source_node_id, **source_node_attrs)
+                    tg.add_edge(source_node_id, node_id, **edge_attrs)
+        return tg
+    
+    def transform(self, edge_transform):
+        sg = SqlGraph()
+        sg.g = SqlGraph.transform_graph(self.g, edge_transform)
+        return sg
+    
+    def get_dest_nodes(self):
+        return [node_id for node_id in self.g.nodes if len(self.g.out_edges(node_id)) == 0]
+    
+    def get_src_nodes(self):
+        return [node_id for node_id in self.g.nodes if len(self.g.in_edges(node_id)) == 0]
+        
     @classmethod
     def filter_graph(cls, g, node_filter=None, edge_filter=None):
         fg = g.copy()
@@ -311,6 +334,31 @@ class SqlGraph():
                         sg.remove_edge(*edge)
             sg = sg.subgraph(nx.descendants(sg, node_id) | {node_id}).copy()
         return sg
+
+
+    def to_dict(self, g=None, *, node_id=None, direction='source'):
+        if g is None:
+            g = self.g
+            
+        d = {}
+        if direction == 'source': 
+            for nid in g.nodes:
+                if nid == node_id or (node_id is None and len(g.out_edges(nid)) == 0):
+                    d[nid] = {
+                        'node_attrs': deepcopy(g.nodes[nid]),
+                        'sources': {}
+                    }
+
+                    for edge in g.in_edges(nid):
+                        node_d = self.to_dict(g, node_id=edge[0], direction=direction)
+
+                        d[nid]['sources'][edge[0]] = {
+                            'edge_attrs': deepcopy(g.edges[*edge]),
+                            **node_d[edge[0]]
+                        }
+        return d
+                        
+                    
     
     @classmethod
     def to_str(cls, g=None, *, node_id=None, src_id=None, dest_id=None):
