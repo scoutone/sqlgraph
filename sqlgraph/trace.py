@@ -435,8 +435,11 @@ class SqlTrace():
                 args = str(d.args['delimiter'])+','+str(d.args['part_index'])
                 return mdl.TransformSource(f'SPLIT_PART({args})', self.trace(d.args['this']))
             elif _type(d) == exp.TimeToStr:
-                args = str(d.args['delimiter'])+','+str(d.args['part_index'])
-                return mdl.TransformSource(f'TIME_TO_STR({args})', self.trace(d.args['this']))
+                if 'delimiter' not in d.args:
+                    args = [str(d.args['format'])]
+                else:
+                    raise ValueError('check this')
+                return mdl.TransformSource(f'TIME_TO_STR({", ".join(args)})', self.trace(d.args['this']))
             elif _type(d) == exp.JSONExtract:
                 r = self.trace_column(d.args['this'])
                 path = str(d.args['expression'])
@@ -534,10 +537,8 @@ class SqlTrace():
                 return mdl.ConstantSource('NULL')
             elif isinstance(e, mdl.Source):
                 raise ValueError('something is wrong')
-            elif type(e) == exp.Lower:
-                return mdl.TransformSource('LOWER', self.trace(e.args['this']))
-            elif type(e) == exp.Not:
-                return mdl.TransformSource('NOT', self.trace(e.args['this']))
+            elif type(e) in [exp.Lower, exp.Not, exp.UnixToTime]:
+                return mdl.TransformSource(e.__class__.__name__.upper(), self.trace(e.args['this']))
             elif type(e) == exp.Explode:
                 if _type(e.args['this']) != exp.Array:
                     raise ValueError(f'Unhandled explode: {e.args["this"]}')
