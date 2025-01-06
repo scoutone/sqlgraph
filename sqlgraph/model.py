@@ -105,9 +105,13 @@ class CompositeSource(Source):
     def to_dict(self):
         d = {
             'type': 'composite',
-            'sources':  list([s.to_dict() for s in self.sources]),
             'name': self.name
         }
+        
+        if type(self.sources) == list:
+            d['sources'] = [x.to_dict() for x in self.sources]
+        else:
+            d['sources'] = {name: x.to_dict() for name, x in self.sources.items()}
         
         d.update({k: v for k,v in super().to_dict().items() if k not in d})
         return d
@@ -143,7 +147,7 @@ class TableSource(Table):
     
 class TransformSource(CompositeSource):
     def __init__(self, transform, sources, **kwargs):
-        if sources and not type(sources) == list:
+        if sources and not type(sources) == list and not type(sources) == dict:
             sources = [sources]
             
         super().__init__(sources=sources, name=transform, **kwargs)
