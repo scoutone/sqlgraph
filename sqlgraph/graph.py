@@ -4,6 +4,9 @@ from sqlgraph import model as mdl
 import textwrap
 from copy import deepcopy
 from sqlgraph.model import TableSource, Table
+import logging
+
+logger = logging.getLogger(__name__)
 
 _type = type
 
@@ -229,13 +232,12 @@ class SqlGraph():
             self._add_node_source(node_id, source)
 
     def _add_node(self, node):
-        print(f'ADD NODE: {node["id"]}')
+        logger.debug(f'ADD NODE: {node["id"]}')
         self.g.add_node(node['id'], **{k: v for k,v in node.items() if k != 'id'})
         return node['id']
     
     def _add_edge(self, src_node, dest_node, **attributes):
-
-        print(f'ADD EDGE: {src_node}->{dest_node}')
+        logger.debug(f'ADD EDGE: {src_node}->{dest_node}')
         self.g.add_edge(src_node, dest_node, **attributes)
         
     def _add_node_source(self, dest_id, source, *, seq=None, edge_label=None):
