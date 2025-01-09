@@ -527,7 +527,7 @@ class SqlTrace():
                 return self.trace(e.parent)
             elif type(e) == exp.Column:
                 return self.trace_column(e)
-            elif type(e) in [exp.Alias, exp.Cast, exp.Paren, exp.Max, exp.Min]:
+            elif type(e) in [exp.Alias, exp.Cast, exp.Paren, exp.Max, exp.Min, exp.ArraySize]:
                 return self.trace(e.args['this'])
             elif type(e) == exp.Window:
                 return self.trace_window(e)
@@ -562,9 +562,7 @@ class SqlTrace():
                 raise ValueError('something is wrong')
             elif type(e) in [exp.Lower, exp.Not, exp.UnixToTime, exp.GroupConcat]:
                 return mdl.TransformSource(e.__class__.__name__.upper(), self.trace(e.args['this']))
-            elif type(e) == exp.Explode:
-                if _type(e.args['this']) != exp.Array:
-                    raise ValueError(f'Unhandled explode: {e.args["this"]}')
+            elif type(e) == exp.Explode and _type(e.args['this']) == exp.Array:
                 return mdl.UnionSource(sources=[self.trace(se) for se in e.args['this'].args['expressions']])
             elif type(e) == exp.Is and type(e.right) == exp.Null:
                 return mdl.TransformSource('IS NULL', [self.trace(e.left)])
@@ -595,6 +593,14 @@ class SqlTrace():
                         'left': self.trace(e.left),
                         'right': self.trace(e.right)
                     }
+                )
+            elif type(e) in [exp.Subquery]:
+                table_source = self.trace_table_structure(e)
+                return mdl.CompositeSource(
+                    sources=[
+                        mdl.ColumnSource(table_source, column_name)
+                        for column_name in table_source.columns
+                    ]
                 )
             elif type(e) == exp.ByteString:
                 return mdl.ConstantSource(value=e.args['this'])
