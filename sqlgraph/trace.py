@@ -562,10 +562,8 @@ class SqlTrace():
                 return col_src
             elif type(e) in [exp.Literal, exp.CurrentDate, exp.Boolean]:
                 return mdl.ConstantSource(str(e))
-            elif type(e) == exp.Count:
-                return mdl.ConstantSource('COUNT')
-            elif type(e) == exp.Null:
-                return mdl.ConstantSource('NULL')
+            elif type(e) in [exp.Count, exp.Null, exp.CurrentDate, exp.CurrentTimestamp]:
+                return mdl.ConstantSource(e.__class__.__name__.upper())
             elif isinstance(e, mdl.Source):
                 raise ValueError('something is wrong')
             elif type(e) in [exp.Lower, exp.Not, exp.UnixToTime, exp.GroupConcat, exp.Explode]:
