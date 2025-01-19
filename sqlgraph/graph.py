@@ -114,9 +114,13 @@ class SqlGraph():
             edge_data = edge_transform(g, node_id, **g.nodes[node_id])
             if edge_data is not None:
                 tg.add_node(node_id, **g.nodes[node_id])
-                for source_node_id, source_node_attrs, edge_attrs in edge_data:
-                    tg.add_node(source_node_id, **source_node_attrs)
-                    tg.add_edge(source_node_id, node_id, **edge_attrs)
+                for source_node_id, dest_node_id, other_node_attrs, edge_attrs in edge_data:
+                    if source_node_id:
+                        tg.add_node(source_node_id, **other_node_attrs)
+                        tg.add_edge(source_node_id, node_id, **edge_attrs)
+                    else:
+                        tg.add_node(dest_node_id, **other_node_attrs)
+                        tg.add_edge(node_id, dest_node_id, **edge_attrs)
         return tg
     
     def transform(self, edge_transform):

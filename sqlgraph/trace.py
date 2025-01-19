@@ -49,7 +49,7 @@ class SqlTrace():
         for n, s in sql.items():
             tbl = mdl.Table(n, None, db, catalog)
             t = parse_one(s, dialect=dialect)
-            tbl = cls.Tracer(schema=schema, tracers=tracers).trace_table(t, n)
+            tbl = cls.Tracer(schema=schema, tracers=tracers, namespace=tbl.id).trace_table(t, n)
             tbl.db = db
             tbl.catalog = catalog
             tables[n] = tbl
@@ -100,12 +100,13 @@ class SqlTrace():
     
     class Tracer():
         
-        def __init__(self, *, schema=None, tracers=None):
+        def __init__(self, *, schema=None, tracers=None, namespace=None):
             self.schema = schema
             self.column_cache = {}
             self.tracers = tracers or {}
+            self.namespace = namespace or str(uuid4())
             self.unique_idx = 0
-            self.unique_names = {}
+            self.unique_names = []
             
         def get_unique_idx(self):
             i = self.unique_idx
@@ -113,10 +114,17 @@ class SqlTrace():
             return i
         
         def get_unique_name(self, e):
-            if e not in self.unique_names:
-                # TODO: add logic to resolve logical name for element
-                self.unique_names[e] = f'UNQ_{self.get_unique_idx()}'
-            return self.unique_names[e]
+            name = None
+            for k, v in self.unique_names:
+                if k == e:
+                    name = v
+                    break
+                
+            if not name:
+                name = f'{self.namespace}_{self.get_unique_idx()}'
+                self.unique_names.append([e, name])
+            return name
+
                 
         
         
@@ -262,7 +270,7 @@ class SqlTrace():
             elif _type(t) in [exp.From, exp.Join]:
                 return self.trace_table_structure(
                     t.args['this'], 
-                    name=name,
+                    name=f'{name}.{t.__class__.__name__.lower()}',
                     select_sources=select_sources
                 )
             elif _type(t) in [exp.Subquery, exp.CTE]:
@@ -560,10 +568,8 @@ class SqlTrace():
                 return mdl.ConstantSource('NULL')
             elif isinstance(e, mdl.Source):
                 raise ValueError('something is wrong')
-            elif type(e) in [exp.Lower, exp.Not, exp.UnixToTime, exp.GroupConcat]:
+            elif type(e) in [exp.Lower, exp.Not, exp.UnixToTime, exp.GroupConcat, exp.Explode]:
                 return mdl.TransformSource(e.__class__.__name__.upper(), self.trace(e.args['this']))
-            elif type(e) == exp.Explode and _type(e.args['this']) == exp.Array:
-                return mdl.UnionSource(sources=[self.trace(se) for se in e.args['this'].args['expressions']])
             elif type(e) == exp.Is and type(e.right) == exp.Null:
                 return mdl.TransformSource('IS NULL', [self.trace(e.left)])
             elif type(e) == exp.In:
