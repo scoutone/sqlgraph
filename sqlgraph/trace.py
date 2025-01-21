@@ -535,7 +535,7 @@ class SqlTrace():
                 return self.trace(e.parent)
             elif type(e) == exp.Column:
                 return self.trace_column(e)
-            elif type(e) in [exp.Alias, exp.Cast, exp.Paren, exp.Max, exp.Min, exp.ArraySize, exp.Order]:
+            elif type(e) in [exp.Alias, exp.Cast, exp.Paren, exp.Max, exp.Min, exp.ArraySize, exp.Order, exp.JSONArrayAgg, exp.ArrayToString]:
                 return self.trace(e.args['this'])
             elif type(e) == exp.Window:
                 return self.trace_window(e)
@@ -547,9 +547,9 @@ class SqlTrace():
                 return self.trace_conditional(e)
             elif type(e) == exp.DPipe:
                 return self.trace_dpipe(e)
-            elif type(e) == exp.Array:
-                return mdl.TransformSource('ARRAY', [self.trace(ex) for ex in e.expressions])
-            elif type(e) == exp.Dot:
+            elif type(e) in [exp.Array, exp.Concat]:
+                return mdl.TransformSource(e.__class__.__name__.upper(), [self.trace(ex) for ex in e.expressions])
+            elif type(e) in [exp.Dot, exp.Extract]:
                 return self.trace(e.args['expression'])
             elif type(e) in [exp.Trim, exp.Upper, exp.Substring, exp.SplitPart, exp.TimeToStr, exp.JSONExtract, exp.JSONExtractScalar, exp.StrToTime, exp.RegexpReplace]:
                 return self.trace_function_call(e)
@@ -562,7 +562,7 @@ class SqlTrace():
                 return col_src
             elif type(e) in [exp.Literal, exp.CurrentDate, exp.Boolean]:
                 return mdl.ConstantSource(str(e))
-            elif type(e) in [exp.Count, exp.Null, exp.CurrentDate, exp.CurrentTimestamp]:
+            elif type(e) in [exp.Count, exp.Null, exp.CurrentDate, exp.CurrentTimestamp, exp.Uuid]:
                 return mdl.ConstantSource(e.__class__.__name__.upper())
             elif isinstance(e, mdl.Source):
                 raise ValueError('something is wrong')
@@ -590,7 +590,7 @@ class SqlTrace():
                         'high': self.trace(e.args['high'])
                     }
                 )
-            elif type(e) in [exp.EQ, exp.NEQ, exp.GT, exp.LT, exp.Is, exp.NullSafeNEQ, exp.NullSafeEQ, exp.RegexpLike, exp.ILike, exp.Div, exp.Sub, exp.Add, exp.Is, exp.And, exp.Or]:
+            elif type(e) in [exp.EQ, exp.NEQ, exp.GT, exp.LT, exp.Is, exp.NullSafeNEQ, exp.NullSafeEQ, exp.RegexpLike, exp.ILike, exp.Div, exp.Sub, exp.Add, exp.Is, exp.And, exp.Or, exp.Mul]:
                 return mdl.TransformSource(
                     e.__class__.__name__.upper(), 
                     {
