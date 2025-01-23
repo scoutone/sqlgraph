@@ -5,6 +5,7 @@ import logging
 import json
 from sqlgraph import model as mdl
 from uuid import uuid4
+from sqlgraph.model import CompositeSource
 
 _type = type
 
@@ -45,16 +46,31 @@ class SqlTrace():
             else:
                 sql = {name: sql}
                 
-        tables = {}
-        for n, s in sql.items():
-            tbl = mdl.Table(n, None, db, catalog)
-            t = parse_one(s, dialect=dialect)
-            tbl = cls.Tracer(schema=schema, tracers=tracers, namespace=tbl.id).trace_table(t, n)
-            tbl.db = db
-            tbl.catalog = catalog
-            tables[n] = tbl
-            
+        # qualify table names if passed
+        if db or catalog:
+            sql = {
+                mdl.Table.get_id(name, db, catalog): s
+                for name, s in sql.items()
+            }
+                
+        tables = cls.Tracer(sql, dialect=dialect, schema=schema, tracers=tracers).trace_sql()
         return SqlTrace(tables)
+        #
+        # try:
+        #     tables = {}
+        #     for n, s in sql.items():
+        #         tbl = mdl.Table(n, None, db, catalog)
+        #         t = parse_one(s, dialect=dialect)
+        #         tbl = cls.Tracer(sql, schema=schema, tracers=tracers, namespace=tbl.id).trace_table(t, n)
+        #         tbl.db = db
+        #         tbl.catalog = catalog
+        #         tables[n] = tbl
+        #
+        #     return SqlTrace(tables)
+        # except Exception as ex:
+        #     raise ValueError(f'Error parsing sql for {name}')
+        
+    
         
     @classmethod
     def trace_file(cls, file, *, name=None, **kwargs):
@@ -62,15 +78,11 @@ class SqlTrace():
             name = os.path.basename(file).rsplit('.', 1)[0]
         with open(file) as f:
             sql = f.read()
-            return cls.trace_sql(
-                sql, 
-                name,
-                **kwargs
-            )
+        return cls.trace_sql({name: sql}, **kwargs)
     
     @classmethod
     def trace_directory(cls, directory, *, models=None, excluded_models=None, **kwargs):
-        tables = {}
+        sqls = {}
         for root, dirs, files in os.walk(directory):
             for file in files:
                 model = file[0:-4]
@@ -80,15 +92,11 @@ class SqlTrace():
                 elif excluded_models and model in excluded_models:
                     continue
                 
-                print(f'tracing {file}')
-                tables.update(
-                    cls.trace_file(
-                        os.path.join(root, file), 
-                        name=model, 
-                        **kwargs
-                    ).tables
-                )
-        return SqlTrace(tables)
+                with open(os.path.join(root, file)) as f:
+                    sql = f.read()
+                sqls[model] = sql
+                    
+        return cls.trace_sql(sqls, **kwargs)
     
     @classmethod
     def list_models(cls, directory):
@@ -100,19 +108,42 @@ class SqlTrace():
     
     class Tracer():
         
-        def __init__(self, *, schema=None, tracers=None, namespace=None):
+        def __init__(self, sqls, *, dialect=None, schema=None, tracers=None):
+            self.sqls = sqls
             self.schema = schema
             self.column_cache = {}
             self.tracers = tracers or {}
-            self.namespace = namespace or str(uuid4())
-            self.unique_idx = 0
             self.unique_names = []
+            self.traced_tables = {}
+            self.dialect = dialect
+            self.parsing_context = []
             
-        def get_unique_idx(self):
-            i = self.unique_idx
-            self.unique_idx += 1
-            return i
-        
+        def get_traced_table(self, table_id):
+            if table_id not in self.sqls:
+                return None
+            
+            if table_id not in self.traced_tables:
+                self.parsing_context.append({'table_id': table_id, 'unique_idx': 0})
+                s = self.sqls[table_id]
+                t = parse_one(s, dialect=self.dialect)
+                qualified_table = mdl.Table.from_id(table_id)
+                tbl = self.trace_table(t, qualified_table.name)
+                tbl.db = qualified_table.db
+                tbl.catalog = qualified_table.catalog
+                self.traced_tables[table_id] = tbl
+                self.parsing_context.pop()
+            return self.traced_tables[table_id]
+            
+            
+        def trace_sql(self):
+            for table_id in self.sqls.keys():
+                try:
+                    self.get_traced_table(table_id)
+                except Exception as ex:
+                    raise ValueError(f'Error parsing sql for {table_id}')
+            return self.traced_tables
+            
+            
         def get_unique_name(self, e):
             name = None
             for k, v in self.unique_names:
@@ -121,13 +152,12 @@ class SqlTrace():
                     break
                 
             if not name:
-                name = f'{self.namespace}_{self.get_unique_idx()}'
+                ctx = self.parsing_context[-1]
+                name = f'{ctx["table_id"]}_{ctx["unique_idx"]}'
+                ctx['unique_idx'] = ctx['unique_idx'] + 1
                 self.unique_names.append([e, name])
             return name
 
-                
-        
-        
         def get_comments(self, tbl):
             comments = tbl.comments or list()
             if 'with' in tbl.args:
@@ -181,10 +211,12 @@ class SqlTrace():
         def resolve_table(self, t):
             table_key = f'{t.db}.{t.name}'
             if table_key not in self.column_cache:
-                if self.schema:
-                    self.column_cache[table_key]= self.schema.get_table(t.name, t.db or None, t.catalog or None)
-                else:
-                    self.column_cache[table_key] = None
+                tbl = self.get_traced_table(mdl.Table(t.name, [], db=t.db or None, catalog=t.catalog or None).id)
+                if not tbl and self.schema:
+                    tbl = self.schema.get_table(t.name, t.db or None, t.catalog or None)
+                
+                self.column_cache[table_key] = tbl
+
             return self.column_cache[table_key]
         
          
@@ -473,6 +505,27 @@ class SqlTrace():
                 if path.startswith('$.'):
                     path = path[2:]
                 return mdl.PathSource(path, r)
+            elif _type(d) in [exp.JSONBExtractScalar]:
+                r = self.trace_column(d.args['this'])
+                src = self.trace(d.args['expression'])
+                if _type(src) == mdl.ConstantSource:
+                    path = src.value.strip("'").strip('{}')
+                    return mdl.PathSource(path, r)
+                elif _type(src) in [mdl.CompositeSource, mdl.TransformSource]:
+                    any_refs = any([_type(ss) != mdl.ConstantSource for ss in src.sources])
+                    if any_refs:
+                        return mdl.CompositeSource(
+                            {
+                                'json': r,
+                                'path': src
+                            },
+                            name='JSON_EXTRACT_PATH'
+                        )
+                    else:
+                        path = '.'.join([ss.value.strip("'").strip('{}') for ss in src.sources])
+                        return mdl.PathSource(path, r)
+                else:
+                    return CompositeSource([r, src])
             elif type(d) == exp.RegexpReplace:
                 return mdl.TransformSource(
                     f'REGEXP_REPLACE({d.args["expression"]}, {d.args["replacement"]})',
@@ -551,7 +604,7 @@ class SqlTrace():
                 return mdl.TransformSource(e.__class__.__name__.upper(), [self.trace(ex) for ex in e.expressions])
             elif type(e) in [exp.Dot, exp.Extract]:
                 return self.trace(e.args['expression'])
-            elif type(e) in [exp.Trim, exp.Upper, exp.Substring, exp.SplitPart, exp.TimeToStr, exp.JSONExtract, exp.JSONExtractScalar, exp.StrToTime, exp.RegexpReplace]:
+            elif type(e) in [exp.Trim, exp.Upper, exp.Substring, exp.SplitPart, exp.TimeToStr, exp.JSONExtract, exp.JSONExtractScalar, exp.JSONBExtractScalar, exp.StrToTime, exp.RegexpReplace]:
                 return self.trace_function_call(e)
             elif type(e) == exp.Star:
                 return self.get_star_cols(e.parent_select)

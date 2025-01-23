@@ -5,6 +5,7 @@ import textwrap
 from copy import deepcopy
 from sqlgraph.model import TableSource, Table
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,40 @@ class SqlGraph():
             for table in tables.values():
                 self.add_table(table, table_group)
             #self.add_mappings(mappings, table_group=table_group) 
+            
+    def to_dict(self):
+        return {
+            'nodes': {
+                node_id: self.g.nodes[node_id]
+                for node_id in self.g.nodes
+            },
+            'edges': [
+                {
+                    'vertices': list(edge),
+                    'attributes': self.g.edges[edge]
+                }
+                for edge in self.g.edges
+            ]
+        }
+        
+    def to_file(self, filename):
+        d = self.to_dict()
+        with open(filename, 'w') as f:
+            json.dump(self.to_dict(), f, indent=2)
+    
+    def from_dict(self, d):
+        for node_id, node_attributes in d.get('nodes', {}).items():
+            self.g.add_node(node_id, **node_attributes)
+            
+        for edge in d.get('edges', []):
+            self.g.add_edge(*edge['vertices'], **edge.get('attributes', {}))
+            
+        return self
+    
+    def from_file(self, filename):
+        with open(filename) as f:
+            return self.from_dict(json.load(f))
+        
         
     def add_all(self, other):
         self.g = nx.compose(self.g, other.graphs)
@@ -342,27 +377,6 @@ class SqlGraph():
         return sg
 
 
-    def to_dict(self, g=None, *, node_id=None, direction='source'):
-        if g is None:
-            g = self.g
-            
-        d = {}
-        if direction == 'source': 
-            for nid in g.nodes:
-                if nid == node_id or (node_id is None and len(g.out_edges(nid)) == 0):
-                    d[nid] = {
-                        'node_attrs': deepcopy(g.nodes[nid]),
-                        'sources': {}
-                    }
-
-                    for edge in g.in_edges(nid):
-                        node_d = self.to_dict(g, node_id=edge[0], direction=direction)
-
-                        d[nid]['sources'][edge[0]] = {
-                            'edge_attrs': deepcopy(g.edges[*edge]),
-                            **node_d[edge[0]]
-                        }
-        return d
                         
                     
     

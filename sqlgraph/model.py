@@ -7,15 +7,23 @@ class Table():
         self.catalog = catalog
         self.columns = columns
         self.type = type
+        
+    @staticmethod
+    def get_id(name, db=None, catalog=None):
+        s = name
+        if db:
+            s = db + '.' + s
+            if catalog:
+                s = catalog + '.' + s
+        return s
        
     @property 
     def id(self):
-        s = self.name
-        if self.db:
-            s = self.db + '.' + s
-            if self.catalog:
-                s = self.catalog + '.' + s
-        return s
+        return Table.get_id(
+            self.name, 
+            self.db, 
+            self.catalog
+        )
         
     def __str__(self):
         return self.id
@@ -65,8 +73,8 @@ class Table():
     def from_id(table_id, columns=None, type='table'):
         parts = table_id.split('.')
         name = parts[-1]
-        catalog = parts[-2] if len(parts) > 1 else None
-        db = parts[-3] if len(parts) > 2 else None
+        db = parts[-2] if len(parts) > 1 else None
+        catalog = parts[-3] if len(parts) > 2 else None
         return Table(name, columns, db=db, catalog=catalog, type=type)
     
     @staticmethod

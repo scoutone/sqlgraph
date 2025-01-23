@@ -6,6 +6,23 @@ from sqlgraph.schema import DictSchema
 
 class TraceTests(unittest.TestCase):
     
+    def test_sql_sourced_schema(self):
+        SQLs = {
+            'table_1': """
+              SELECT
+                NULL::TEXT as col_1,
+                NULL::BOOLEAN as col_2
+            """,
+            'table_2': """
+              SELECT
+                *
+              FROM table_1
+            """
+        }
+        
+        t = SqlTrace.trace_sql(SQLs, dialect=PostgresExtended, schema=DictSchema({}))
+        print(t)
+    
     def test_struct_source(self):
         TABLES = {
             'test_db': {
