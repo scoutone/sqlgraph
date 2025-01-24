@@ -39,12 +39,22 @@ class SqlTrace():
 
         
     @classmethod
-    def trace_sql(cls, sql, name=None, *, dialect=None, schema=None, db=None, catalog=None, tracers=None):
+    def trace_sql(cls, sql, name=None, *, models=None, excluded_models=None, dialect=None, schema=None, db=None, catalog=None, tracers=None):
         if type(sql) == str:
             if not name:
                 raise ValueError('name is required for single SQL statement')
             else:
                 sql = {name: sql}
+                
+        filtered = {}
+        for model, sql in sql.items():
+            if models is not None:
+                if model not in models:
+                    continue
+            elif excluded_models and model in excluded_models:
+                continue
+            filtered[model] = sql
+        sql = filtered
                 
         # qualify table names if passed
         if db or catalog:
@@ -55,22 +65,6 @@ class SqlTrace():
                 
         tables = cls.Tracer(sql, dialect=dialect, schema=schema, tracers=tracers).trace_sql()
         return SqlTrace(tables)
-        #
-        # try:
-        #     tables = {}
-        #     for n, s in sql.items():
-        #         tbl = mdl.Table(n, None, db, catalog)
-        #         t = parse_one(s, dialect=dialect)
-        #         tbl = cls.Tracer(sql, schema=schema, tracers=tracers, namespace=tbl.id).trace_table(t, n)
-        #         tbl.db = db
-        #         tbl.catalog = catalog
-        #         tables[n] = tbl
-        #
-        #     return SqlTrace(tables)
-        # except Exception as ex:
-        #     raise ValueError(f'Error parsing sql for {name}')
-        
-    
         
     @classmethod
     def trace_file(cls, file, *, name=None, **kwargs):
@@ -81,16 +75,11 @@ class SqlTrace():
         return cls.trace_sql({name: sql}, **kwargs)
     
     @classmethod
-    def trace_directory(cls, directory, *, models=None, excluded_models=None, **kwargs):
+    def trace_directory(cls, directory, **kwargs):
         sqls = {}
         for root, dirs, files in os.walk(directory):
             for file in files:
                 model = file[0:-4]
-                if models is not None:
-                    if model not in models:
-                        continue
-                elif excluded_models and model in excluded_models:
-                    continue
                 
                 with open(os.path.join(root, file)) as f:
                     sql = f.read()
