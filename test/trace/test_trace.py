@@ -57,6 +57,22 @@ class TraceTests(unittest.TestCase):
             print(f'{column_name}: {column_source}')
         print(ts)
         print(t)
+    
+    def test_chained_json_get(self):
+        TABLES = {}
+        
+        SQL = """\
+          --SELECT COALESCE(j->'SCREENING DEPTH'->>'os') AS screening_depth_os
+          SELECT COALESCE('a', 'b') AS screening_depth_os
+          FROM (SELECT '{"a": {"b": 1}}'::JSON as j);
+        """
+
+        t = SqlTrace.trace_sql(SQL, 'test_chained_json_get', dialect=PostgresExtended, schema=DictSchema(TABLES))
+        ts = t.tables['test_chained_json_get']
+        for column_name, column_source in ts.sources.items():
+            print(f'{column_name}: {column_source}')
+        print(ts)
+        print(t)
         
         
         
