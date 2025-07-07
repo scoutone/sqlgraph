@@ -404,7 +404,7 @@ class SqlTrace():
         
          
         def get_columns_for_table(self, table, name):
-            if _type(table) in [exp.CTE, exp.Subquery, exp.Values]:
+            if _type(table) in [exp.CTE, exp.Subquery, exp.Values, exp.Select]:
                 cols = {}
                 for n, c in zip(table.named_selects, table.selects):
                     if n == '*':
@@ -415,7 +415,8 @@ class SqlTrace():
                 type = {
                     exp.CTE: 'cte',
                     exp.Subquery: 'sq',
-                    exp.Values: 'values'
+                    exp.Values: 'values',
+                    exp.Select: 'select'
                 }[_type(table)]
                 ts = mdl.TableSource(
                     name+'.'+type,
@@ -741,7 +742,7 @@ class SqlTrace():
                     ])
             elif type(e) in [exp.ExplodingGenerateSeries]:
                 return mdl.ConstantSource(value=f'SERIES[{e.args["start"]}..{e.args["end"]}]')
-            elif type(e) == exp.ByteString:
+            elif type(e) in [exp.ByteString, exp.RawString]:
                 return mdl.ConstantSource(value=e.args['this'])
             elif type(e) == exp.Kwarg:
                 print(e)
