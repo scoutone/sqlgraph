@@ -251,7 +251,7 @@ class SqlTrace():
                 
             sources = [select.args['from']]
             sources.extend(select.args.get('joins', []))
-            sources = {s.alias_or_name: s for s in sources}
+            sources = {s.alias_or_name or f'src_{i}': s for i, s in enumerate(sources)}
                     
             # check to see if any are CTEs
             for aon in sources:
@@ -380,8 +380,7 @@ class SqlTrace():
                             traced_ss.append(ts) # for debugging
                     except Exception as ex:
                         print(ex)
-                ##debugging
-                print('debugging')
+
                 for s in self.get_select_sources(column.parent_select).values():
                     try:
                         ts = self.trace_table_structure(s)
@@ -405,25 +404,21 @@ class SqlTrace():
          
         def get_columns_for_table(self, table, name):
             if _type(table) in [exp.CTE, exp.Subquery, exp.Values, exp.Select]:
-                cols = {}
-                for n, c in zip(table.named_selects, table.selects):
-                    if n == '*':
-                        sc = self.trace(c)
-                        cols.update(sc)
-                    else:
-                        cols[n] = self.trace(c) 
+                
                 type = {
                     exp.CTE: 'cte',
                     exp.Subquery: 'sq',
                     exp.Values: 'values',
                     exp.Select: 'select'
                 }[_type(table)]
-                ts = mdl.TableSource(
-                    name+'.'+type,
-                    cols,
+                
+                tbl_src = self.trace_table_structure(table, name=name)
+                return mdl.TableSource(
+                    tbl_src.name,
+                    tbl_src.sources,
                     type=type
                 )
-                return ts
+
             elif _type(table) == exp.Table and _type(table.args['this']) in [exp.Identifier]:
                 # actual table
                 tbl = self.resolve_table(table)
@@ -582,17 +577,43 @@ class SqlTrace():
                 return mdl.TransformSource(name, self.trace(params[0]))
             
             return mdl.UnknownSource(f'[FunctionCall]: {d}')
-        
-         
-        def trace_coalesce(self, coalesce):
+            
+        def trace_generic_composite(self, e):
+            source_elements = []
+            if 'this' in e.args and e.args['this']:
+                source_elements.append(e.args['this'])
+            
+            if 'expression' in e.args and e.args['expression']:
+                source_elements.append(e.args['expression'])
+                
+            if 'expressions' in e.args and e.args['expressions']:
+                source_elements.extend(e.args['expressions'])
+
             return mdl.CompositeSource(
                 [
                     self.trace(x) 
-                    for x in [
-                        coalesce.args['this']
-                    ]+coalesce.args['expressions']
+                    for x in source_elements
                 ],
-                name='COALESCE'
+                name=e.__class__.__name__.upper()
+            )
+            
+        def trace_generic_transform(self, e):
+            source_elements = []
+            if 'this' in e.args and e.args['this']:
+                source_elements.append(e.args['this'])
+            
+            if 'expression' in e.args and e.args['expression']:
+                source_elements.append(e.args['expression'])
+                
+            if 'expressions' in e.args and e.args['expressions']:
+                source_elements.extend(e.args['expressions'])
+            
+            return mdl.TransformSource(
+                transform=e.__class__.__name__.upper(),
+                sources=[
+                    self.trace(x) 
+                    for x in source_elements
+                ]
             )
             
         
@@ -638,12 +659,14 @@ class SqlTrace():
             elif type(e) in [exp.Alias, exp.Cast, exp.Paren, exp.Max, exp.Min, exp.ArraySize, 
                              exp.Order, exp.JSONArrayAgg, exp.ArrayAgg, exp.ArrayToString, 
                              exp.StringToArray, exp.AnyValue, exp.Neg, exp.Where, exp.Initcap,
-                             exp.Length, exp.Sum]:
+                             exp.Length, exp.Sum, exp.FirstValue]:
                 return self.trace(e.args['this'])
             elif type(e) == exp.Window:
                 return self.trace_window(e)
-            elif type(e) == exp.Coalesce:
-                return self.trace_coalesce(e)
+            elif type(e) in [exp.Least, exp.Greatest, exp.Coalesce, exp.Tuple, exp.Any]:
+                return self.trace_generic_composite(e)
+            elif type(e) in [exp.Pad, exp.Filter, exp.Left]:
+                return self.trace_generic_transform(e)
             elif type(e) == exp.Struct:
                 return self.trace_struct(e)
             elif type(e) == exp.Case:
@@ -667,6 +690,12 @@ class SqlTrace():
             elif type(e) == exp.Star:
                 return self.get_star_cols(e.parent_select)
             elif type(e) == exp.Bracket:
+                # SPECIAL CASE FOR JSONB_EXTRACT_SCALAR (TODO: may need to handle json version here as well)
+                #the parser produces a strange output for dynamic paths.  If we happen to get one of those,
+                #convert it to the same format as static path
+                if type(e.this) == exp.JSONBExtractScalar and e.this.expression.alias_or_name == 'ARRAY':
+                    e.this.args['expression'] = e.expressions[0]
+                
                 col_src = self.trace(e.args['this'])
                 if type(col_src) == mdl.ColumnSource:
                     return mdl.TransformSource(f'LIST_INDEX[{e.output_name}]', col_src)
@@ -703,7 +732,7 @@ class SqlTrace():
                 )
             elif type(e) in [exp.EQ, exp.NEQ, exp.GT, exp.LT, exp.Is, exp.NullSafeNEQ, exp.NullSafeEQ, 
                              exp.RegexpLike, exp.Like, exp.ILike, exp.Div, exp.Sub, exp.Add, exp.Is, 
-                             exp.And, exp.Or, exp.Mul, exp.LTE, exp.GTE]:
+                             exp.And, exp.Or, exp.Mul, exp.LTE, exp.GTE, exp.SimilarTo]:
                 return mdl.TransformSource(
                     e.__class__.__name__.upper(), 
                     {
@@ -726,13 +755,6 @@ class SqlTrace():
                         self.trace(e.expressions[0].args['this']),
                         self.trace(e.expressions[0].args['expression'])
                     ])
-            elif type(e) in [exp.Filter]:
-                return mdl.TransformSource(
-                    e.__class__.__name__.upper(), 
-                    [
-                        self.trace(e.args['this']),
-                        self.trace(e.args['expression'])
-                    ])
             elif type(e) in [exp.StrPosition]:
                 return mdl.TransformSource(
                     e.__class__.__name__.upper(), 
@@ -744,7 +766,19 @@ class SqlTrace():
                 return mdl.ConstantSource(value=f'SERIES[{e.args["start"]}..{e.args["end"]}]')
             elif type(e) in [exp.ByteString, exp.RawString]:
                 return mdl.ConstantSource(value=e.args['this'])
-            elif type(e) == exp.Kwarg:
-                print(e)
+            elif type(e) in [exp.Lag, exp.Lead]:
+                return mdl.CompositeSource(
+                    sources=[self.trace(e.args['this'])],
+                    name=e.__class__.__name__.upper()
+                )
+            elif type(e) in [exp.Encode]:
+                return mdl.TransformSource(
+                    f'{e.__class__.__name__.upper()}({e.args["charset"]})', 
+                    [
+                        self.trace(e.args['this'])
+                    ]
+                )
+            elif type(e) in [exp.DataType]:
+                return mdl.ConstantSource(value=f'DATATYPE[{e.sql()}]')
             else:
                 return mdl.UnknownSource(f'[{type(e).__name__}] {e}')
