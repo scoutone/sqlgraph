@@ -7,10 +7,10 @@ from setuptools import setup, find_packages  # noqa: H301
 # prerequisite: setuptools
 # http://pypi.python.org/pypi/setuptools
 NAME = "sqlgraph"
-VERSION = "0.0.4"
+VERSION = "0.0.5"
 PYTHON_REQUIRES = ">=3.7"
 REQUIRES = [
-    "sqlglot",
+    "sqlglot==25.34.0",
     "networkx",
 ]
 
