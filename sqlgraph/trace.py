@@ -106,6 +106,7 @@ class SqlTrace():
             self.traced_tables = {}
             self.dialect = dialect
             self.parsing_context = []
+            self.node_cache = {}
             
         def get_traced_table(self, table_id):
             if table_id not in self.sqls:
@@ -275,6 +276,14 @@ class SqlTrace():
         def trace_table_structure(self, t, *, type=None, name=None, select_sources=None):
             if name is None:
                 name = self.get_unique_name(t)
+                
+            if name not in self.node_cache:
+                self.node_cache[name] = self._do_trace_table_structure(t, name, type=type, select_sources=select_sources)
+                
+            return self.node_cache[name]
+        
+        def _do_trace_table_structure(self, t, name, *, type=None, select_sources=None):
+            print(f'Tracing [{t.type}]: {name}')
                 
             if _type(t) in [exp.Lateral]:
                 if _type(t.args['this']) in [exp.Subquery]:
