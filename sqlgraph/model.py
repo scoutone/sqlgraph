@@ -1,3 +1,5 @@
+import itertools
+from types import NoneType
 
 
 class Table():
@@ -98,6 +100,9 @@ class Source():
     def as_list(self):
         return [self]
     
+    def all_sources(self):
+        return self.as_list()
+    
     def __str__(self):
         return str(self.to_dict())
         
@@ -109,6 +114,9 @@ class CompositeSource(Source):
                 
     def as_list(self):
         return self.sources
+    
+    def all_sources(self):
+        return list(itertools.chain.from_iterable([x.all_sources() for x in self.as_list()]))
         
     def to_dict(self):
         d = {
@@ -139,6 +147,12 @@ class StructSource(Source):
         }
         d.update({k: v for k,v in super().to_dict().items() if k not in d})
         return d
+                
+    def as_list(self):
+        return list(self.sources.values()) if self.sources else []
+    
+    def all_sources(self):
+        return list(itertools.chain.from_iterable([x.all_sources() for x in self.as_list()]))
     
 class TableSource(Table):
     def __init__(self, name, sources, type, *, db=None, catalog=None):
@@ -152,6 +166,12 @@ class TableSource(Table):
             for c, s in self.sources.items()
         }
         return d
+                
+    def as_list(self):
+        return list(self.sources.values()) if self.sources else []
+    
+    def all_sources(self):
+        return list(itertools.chain.from_iterable([x.all_sources() for x in self.as_list()]))
     
 class TransformSource(CompositeSource):
     def __init__(self, transform, sources, **kwargs):
@@ -166,6 +186,17 @@ class TransformSource(CompositeSource):
         }
         d.update({k: v for k,v in super().to_dict().items() if k not in d})
         return d
+                
+    def as_list(self):
+        if not self.sources:
+            return []
+        elif type(self.sources) == list:
+            return self.sources
+        else:
+            return list(self.sources.values())
+    
+    def all_sources(self):
+        return list(itertools.chain.from_iterable([x.all_sources() for x in self.as_list()]))
 
 class UnknownSource(Source):
     def __init__(self, msg, **kwargs):
@@ -200,6 +231,7 @@ class ColumnSource(Source):
         self.column = column
         
     def to_dict(self):
+        #print(f'table type: {type(self.table)} [{self.table}]')
         d = {
             'type': 'column',
             'table': self.table if type(self.table) == str else self.table.id,
@@ -224,6 +256,17 @@ class ComparisonSource(Source):
         }
         d.update({k: v for k,v in super().to_dict().items() if k not in d})
         return d
+                
+    def as_list(self):
+        val = []
+        if self.left:
+            val.append(self.left)
+        if self.right:
+            val.append(self.right)
+        return val
+    
+    def all_sources(self):
+        return list(itertools.chain.from_iterable([x.all_sources() for x in self.as_list()]))
         
        
     
@@ -243,6 +286,17 @@ class ConditionalSource(Source):
         }
         d.update({k: v for k,v in super().to_dict().items() if k not in d})
         return d
+                
+    def as_list(self):
+        val = []
+        if self.true_value:
+            val.append(self.true_value)
+        if self.false_value:
+            val.append(self.false_value)
+        return val
+    
+    def all_sources(self):
+        return list(itertools.chain.from_iterable([x.all_sources() for x in self.as_list()]))
     
         
 class PathSource(Source):
@@ -260,23 +314,32 @@ class PathSource(Source):
         d.update({k: v for k,v in super().to_dict().items() if k not in d})
         return d
     
+    def to_list(self):
+        return [self.source] if self.source else []
+    
+    def all_sources(self):
+        return list(itertools.chain.from_iterable([x.all_sources() for x in self.as_list()]))
+    
 class UnionSource(CompositeSource):
     def __init__(self, left=None, right=None, *, sources=[], **kwargs):
-        sources = sources
+        srcs = sources or []
         if type(left) == UnionSource:
-            sources.extend(left.sources)
+            srcs.extend(left.sources)
         elif left:
-            sources.append(left)
+            srcs.append(left)
         
         if type(right) == UnionSource:
-            sources.extend(right.sources)
+            srcs.extend(right.sources)
         elif right:
-            sources.append(right)
+            srcs.append(right)
         
-        super().__init__(sources=sources, **kwargs)
+        super().__init__(sources=srcs, **kwargs)
                 
     def as_list(self):
         return self.sources
+    
+    def all_sources(self):
+        return list(itertools.chain.from_iterable([x.all_sources() for x in self.as_list()]))
         
     def to_dict(self):
         d = {
@@ -284,3 +347,85 @@ class UnionSource(CompositeSource):
             }
         d.update({k: v for k,v in super().to_dict().items() if k not in d})
         return d
+
+
+class RecursiveReplacement(): 
+    """
+    This logic could have been implemented as member methods on the various model classes,
+    however since it's pretty hacky logic to get around handling of recursive CTEs in
+    postgres, I decided to keep it separate and isolated rather than polluting the models
+    """
+    @classmethod
+    def replace_table(cls, root_src, transitive_table):
+        for transitive_column in transitive_table.columns:
+            cls.replace(
+                root_src, 
+                ColumnSource(transitive_table.name, transitive_column), 
+                transitive_table.sources[transitive_column]
+            )
+        
+    @classmethod
+    def replace(cls, root_src, src_to_replace, replacement):
+        SOURCE_CLASSES = [
+            Source, 
+            CompositeSource, 
+            StructSource, 
+            TableSource, 
+            TransformSource, 
+            UnknownSource, 
+            ConstantSource, 
+            ColumnSource, 
+            ComparisonSource,
+            ConditionalSource, 
+            PathSource, 
+            UnionSource
+        ]
+        
+        def _eq(s1, s2):
+            if not s1 or not s2:
+                return False
+            elif type(s1) != type(s2):
+                return False 
+            else:
+                return s1.to_dict() == s2.to_dict()    
+            
+        def _replace_list(l, s_t_r, r):
+            return list([_replace(x, s_t_r, r) for x in l])
+            
+        def _replace_dict(d, s_t_r, r):
+            return {
+                k: _replace(v, s_t_r, r)
+                for k,v in d.items()
+            }
+            
+        def _replace_list_or_dict(l_or_d, s_t_r, r):
+            if type(l_or_d) == list:
+                return _replace_list(l_or_d, s_t_r, r)
+            elif type(l_or_d) == dict:
+                return _replace_dict(l_or_d, s_t_r, r)
+            else:
+                return l_or_d
+        
+        def _replace(s, s_t_r, r):
+            if type(s) in [Source, UnknownSource, ConstantSource, ColumnSource]:
+                if _eq(s, s_t_r):
+                    print(f's: {s}')
+                    print(f's_t_r: {s_t_r}')
+                    print(f'r: {r}')
+                    return r 
+                else:
+                    return s
+            else:
+                if type(s) in [CompositeSource, StructSource, TableSource, TransformSource, UnionSource]:
+                    s.sources = _replace_list_or_dict(s.sources, s_t_r, r)
+                elif type(s) == ComparisonSource:
+                    s.left = _replace(s.left, s_t_r, r)
+                    s.right = _replace(s.right, s_t_r, r)
+                elif type(s) == ConditionalSource:
+                    s.true_value == _replace(s.true_value, s_t_r, r)
+                    s.false_value == _replace(s.false_value, s_t_r, r)
+                elif type(s) == PathSource:
+                    s.source = _replace(s.source, s_t_r, r)
+                return s
+        
+        _replace(root_src, src_to_replace, replacement)

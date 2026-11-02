@@ -277,10 +277,10 @@ class SqlTrace():
             if name is None:
                 name = self.get_unique_name(t)
                 
-            if name not in self.node_cache:
-                self.node_cache[name] = self._do_trace_table_structure(t, name, type=type, select_sources=select_sources)
+            if t not in self.node_cache:
+                self.node_cache[t] = self._do_trace_table_structure(t, name, type=type, select_sources=select_sources)
                 
-            return self.node_cache[name]
+            return self.node_cache[t]
         
         def _do_trace_table_structure(self, t, name, *, type=None, select_sources=None):
             print(f'Tracing [{t.type}]: {name}')
@@ -337,6 +337,16 @@ class SqlTrace():
             elif _type(t) in [exp.Table]:
                 return self.get_columns_for_table(t, name)
             elif _type(t) == exp.Union:
+                is_recursive = self.is_recursive(t, name)
+                original_t = t
+                recursive_table = None
+                if is_recursive:
+                    # the final union select is the recursive select
+                    recursive_table = t.right
+                    # all others are anchor selects
+                    t = t.left 
+                    
+                
                 union_tables = []
                 while _type(t) == exp.Union:
                     union_tables.insert(0, t.right)
@@ -347,7 +357,7 @@ class SqlTrace():
                     self.trace_table_structure(union_tables[i], name=name+f'.union[{i}]', select_sources=select_sources) 
                     for i in range(len(union_tables))
                 ])
-                
+
                 ts = mdl.TableSource(
                     name, 
                     {
@@ -361,10 +371,51 @@ class SqlTrace():
                     }, 
                     type='union'
                 )
+                
+                if recursive_table:
+				    # if we have a recursive CTE, we have to do some manual manipulation to prevent circular references
+					# 1. store the parsed "anchor" tables (ts) in the cache so that the recursive portion can reference them
+                    self.node_cache[original_t] = ts
+					# 2. parse the recursive table portion (which will reference the anchor tables)
+                    rts = self.trace_table_structure(recursive_table, name=name+f'.union_recursive', select_sources=select_sources)
+                    
+					# 3. Replace any references to the anchor tables in the recursive tables with references to the 
+					#    transitive source.  This will prevent self-referential loops
+                    mdl.RecursiveReplacement.replace_table(rts, ts)
+                        
+					# 4. Now combine the sources of the anchor clauses with the sources of the recursive clause into one
+					#    note that we use a temporary dictionary in case there are multiple replacements of the same column    
+                    new_union_sources = {
+                        column: mdl.UnionSource(
+                            left=ts.sources[column], 
+                            right=rts.sources.get(column, [])
+                        )
+                        for column in ts.columns
+                    }
+                    ts.sources = new_union_sources
+   
+   					# 5. Finally, returned the modified source
+                    return ts
+                
                 return ts
             else:
                 return self.get_columns_for_table(t, name)
         
+        def is_recursive(self, union_table, name):
+            
+            # recursive query must be union of one or more anchor queries and a single recursive query
+            try:
+                last_union_table = union_table.right
+                last_union_src = self.get_table(last_union_table, last_union_table.args['from'])
+                if last_union_src != last_union_table.parent:
+                    return False
+            except Exception as ex:
+                print(ex)
+                return False
+            
+            #at this point, we know it's recursive
+            print(f'processing recursive CTE: {name}')
+            return True
          
         def trace_column(self, column):
             if 'table' in column.args:
