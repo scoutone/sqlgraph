@@ -231,29 +231,46 @@ class SqlTrace():
            
         
         
-        def get_select_sources(self, select):
-            if 'from' not in select.args:
-                parent = select.parent
-                while _type(parent) != exp.Lateral and parent.parent and not parent.same_parent:
-                    parent = parent.parent
-                    
-                if _type(parent) == exp.Lateral:
-                    lateral = parent
-                    #dealing with lateral
-                    parent_sources = self.get_select_sources(lateral.parent_select)
-                    prior_sources = {}
-                    for pn, ps in parent_sources.items():
-                        if ps.args.get('this') == lateral:
-                            break
-                        prior_sources[pn] = ps
-                    return prior_sources
-                else:
-                    raise ValueError(f'unhandled select sources: {select}')
-                
-            sources = [select.args['from']]
-            sources.extend(select.args.get('joins', []))
-            sources = {s.alias_or_name or f'src_{i}': s for i, s in enumerate(sources)}
-                    
+        def get_visible_sources(self, column):
+            # sources a column can resolve against. A column inside a FROM/JOIN source expression
+            # (e.g. an argument of a table function) can't refer to that source's own output, and
+            # trying to would re-trace the source forever; ON/WHERE/SELECT columns are unaffected.
+            ancestors = []
+            node = column.parent
+            while node is not None:
+                ancestors.append(node)
+                node = node.parent
+            return {
+                n: s for n, s in self.get_select_sources(column.parent_select).items()
+                if _type(s) not in [exp.From, exp.Join] or not any(a is s.args.get('this') for a in ancestors)
+            }
+
+        def get_enclosing_lateral(self, select):
+            # returns the Lateral that directly wraps this select (through subquery/union wrappers), if any
+            parent = select.parent
+            while parent is not None and _type(parent) in [exp.Subquery, exp.Union, exp.Paren]:
+                parent = parent.parent
+            return parent if _type(parent) == exp.Lateral else None
+
+        def get_select_sources(self, select, include_outer=True):
+            sources = {}
+            if 'from' in select.args:
+                own = [select.args['from']]
+                own.extend(select.args.get('joins', []))
+                sources = {s.alias_or_name or f'src_{i}': s for i, s in enumerate(own)}
+
+            # a select inside a LATERAL can reference sources that appear earlier in the enclosing
+            # select (correlated references); make those visible, with the select's own sources winning
+            lateral = self.get_enclosing_lateral(select) if include_outer else None
+            if not sources and lateral is None:
+                raise ValueError(f'unhandled select sources: {select}')
+
+            if lateral is not None:
+                for pn, ps in self.get_select_sources(lateral.parent_select).items():
+                    if ps.args.get('this') == lateral:
+                        break
+                    sources.setdefault(pn, ps)
+
             # check to see if any are CTEs
             for aon in sources:
                 source = sources[aon]
@@ -287,14 +304,27 @@ class SqlTrace():
                 
             if _type(t) in [exp.Lateral]:
                 if _type(t.args['this']) in [exp.Subquery]:
-                    return self.trace_table_structure(
-                        t.args['this'], 
+                    sq_ts = self.trace_table_structure(
+                        t.args['this'],
                         name=f'{name}.{t.__class__.__name__.lower()}',
                         select_sources=select_sources
                     )
+
+                    # LATERAL (...) AS a(j, slot): the alias column list renames the subquery's output
+                    # columns by position, so expose them under those names, linked to the subquery's
+                    # columns (columns beyond the alias list keep their own names)
+                    alias = t.args.get('alias')
+                    alias_cols = [c.name for c in alias.args.get('columns') or []] if alias else []
+                    if alias_cols:
+                        orig_cols = list(sq_ts.columns)
+                        renamed = {}
+                        for i, orig in enumerate(orig_cols):
+                            renamed[alias_cols[i] if i < len(alias_cols) else orig] = mdl.ColumnSource(sq_ts, orig)
+                        return mdl.TableSource(name, renamed, type=sq_ts.type)
+                    return sq_ts
                 else:
                     return self.get_columns_for_table(t, name)
-            elif _type(t) in [exp.From, exp.Join, exp.Lateral]:
+            elif _type(t) in [exp.From, exp.Join]:
                 return self.trace_table_structure(
                     t.args['this'], 
                     name=f'{name}.{t.__class__.__name__.lower()}',
@@ -317,9 +347,10 @@ class SqlTrace():
                 columns = {}
                 if '*' in t.named_selects:
                     if not select_sources:
-                        select_sources = self.get_select_sources(t)
+                        # own sources only: a star must not expand correlated outer (lateral) sources
+                        select_sources = self.get_select_sources(t, include_outer=False)
                     for src in select_sources.values():
-                        trc = self.trace_table_structure(src, name=name)
+                        trc = self.trace_table_structure(src, name=name+'.src')
                         for c in trc.columns:
                             columns[c] = mdl.ColumnSource(trc, c)
                         
@@ -429,7 +460,7 @@ class SqlTrace():
                     else:
                         return mdl.ColumnSource(ts, column.name)
             else:
-                select_sources = self.get_select_sources(column.parent_select)
+                select_sources = self.get_visible_sources(column)
                 traced_ss = [] # for debugging
                 for s in select_sources.values():
                     try:
@@ -441,7 +472,7 @@ class SqlTrace():
                     except Exception as ex:
                         print(ex)
 
-                for s in self.get_select_sources(column.parent_select).values():
+                for s in select_sources.values():
                     try:
                         ts = self.trace_table_structure(s)
                         if column.name in ts.columns:
@@ -456,7 +487,7 @@ class SqlTrace():
             if 'table' in column.args:
                 return self.get_table(column.parent_select, column.args['table'])
             else:
-                for s in self.get_select_sources(column.parent_select).values():
+                for s in self.get_visible_sources(column).values():
                     ts = self.trace_table_structure(s)
                     if column.name in ts.columns:
                         return s.args['this']
@@ -496,16 +527,27 @@ class SqlTrace():
                     raise ValueError(f'unsupported table function {table}')
                 
                 func_src = self.trace(trace_val)
-                if 'alias' not in table.args:
-                    print('pause')
-                    
-                table_alias = table.args['alias']
-                if table_alias.args.get('columns'):
+                table_alias = table.args.get('alias')
+                if table_alias is not None and table_alias.args.get('columns'):
                     col_names = [c.name for c in table_alias.args['columns']]
-                else:
+                elif table_alias is not None:
                     col_names = [table_alias.args['this'].name]
+                else:
+                    # no alias (e.g. FROM JSON_ARRAY_ELEMENTS(x) WITH ORDINALITY): the output column is
+                    # named after the function, plus an 'ordinality' column when requested
+                    fn = table.args.get('this', table)
+                    fn_name = (getattr(fn, 'name', None) or fn.sql_name()).lower()
+                    col_names = [fn_name]
+                    if table.args.get('ordinality'):
+                        col_names.append('ordinality')
 
-                return mdl.TableSource(name, {n: func_src for n in col_names}, 'table_function')
+                # WITH ORDINALITY appends a row-number column, which doesn't derive from the function's input
+                ordinality_col = col_names[-1] if table.args.get('ordinality') and len(col_names) > 1 else None
+                return mdl.TableSource(
+                    name,
+                    {n: (mdl.ConstantSource(value='ORDINALITY') if n == ordinality_col else func_src) for n in col_names},
+                    'table_function'
+                )
         
          
         def trace_cte_column(self, cte, col_name):
@@ -840,5 +882,11 @@ class SqlTrace():
                 )
             elif type(e) in [exp.DataType]:
                 return mdl.ConstantSource(value=f'DATATYPE[{e.sql()}]')
+            elif type(e) == exp.Anonymous:
+                # generic function call (e.g. JSON_BUILD_ARRAY, JSON_ARRAY_ELEMENTS): its output derives from its arguments
+                fn_name = str(e.name).upper()
+                if not e.expressions:
+                    return mdl.ConstantSource(value=fn_name)
+                return mdl.TransformSource(fn_name, [self.trace(x) for x in e.expressions])
             else:
                 return mdl.UnknownSource(f'[{type(e).__name__}] {e}')
