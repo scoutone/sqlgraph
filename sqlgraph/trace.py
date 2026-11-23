@@ -102,11 +102,15 @@ class SqlTrace():
             self.schema = schema
             self.column_cache = {}
             self.tracers = tracers or {}
-            self.unique_names = []
             self.traced_tables = {}
             self.dialect = dialect
             self.parsing_context = []
-            self.node_cache = {}
+
+            # NOTE: sqlglot expressions compare (and hash) *structurally*, so two different nodes with identical SQL
+            # - e.g. the whole statement of two different models - are "equal".  Both of these are therefore keyed by
+            # object identity, and keep a reference to the expression so its id() can't be reused by another object.
+            self.unique_names = {} # id(expression) -> (expression, name)
+            self.node_cache = {} # id(expression) -> (expression, traced table structure)
             
         def get_traced_table(self, table_id):
             if table_id not in self.sqls:
@@ -135,18 +139,12 @@ class SqlTrace():
             
             
         def get_unique_name(self, e):
-            name = None
-            for k, v in self.unique_names:
-                if k == e:
-                    name = v
-                    break
-                
-            if not name:
+            if id(e) not in self.unique_names:
                 ctx = self.parsing_context[-1]
                 name = f'{ctx["table_id"]}_{ctx["unique_idx"]}'
                 ctx['unique_idx'] = ctx['unique_idx'] + 1
-                self.unique_names.append([e, name])
-            return name
+                self.unique_names[id(e)] = (e, name)
+            return self.unique_names[id(e)][1]
 
         def get_comments(self, tbl):
             comments = tbl.comments or list()
@@ -246,11 +244,12 @@ class SqlTrace():
             }
 
         def get_enclosing_lateral(self, select):
-            # returns the Lateral that directly wraps this select (through subquery/union wrappers), if any
+            # returns the nearest Lateral this select is nested inside, at any depth, if any.  Anything inside a
+            # LATERAL's body (including derived tables nested in it) can refer to the sources to the lateral's left.
             parent = select.parent
-            while parent is not None and _type(parent) in [exp.Subquery, exp.Union, exp.Paren]:
+            while parent is not None and _type(parent) != exp.Lateral:
                 parent = parent.parent
-            return parent if _type(parent) == exp.Lateral else None
+            return parent
 
         def get_select_sources(self, select, include_outer=True):
             sources = {}
@@ -266,10 +265,19 @@ class SqlTrace():
                 raise ValueError(f'unhandled select sources: {select}')
 
             if lateral is not None:
-                for pn, ps in self.get_select_sources(lateral.parent_select).items():
-                    if ps.args.get('this') == lateral:
+                parent_select = lateral.parent_select
+                parent_own = self.get_select_sources(parent_select, include_outer=False)
+
+                # sources to the left of the lateral in its parent select...
+                for pn, ps in parent_own.items():
+                    if ps.args.get('this') is lateral:
                         break
                     sources.setdefault(pn, ps)
+
+                # ...plus anything the parent select can itself see from enclosing laterals
+                for pn, ps in self.get_select_sources(parent_select).items():
+                    if pn not in parent_own:
+                        sources.setdefault(pn, ps)
 
             # check to see if any are CTEs
             for aon in sources:
@@ -294,10 +302,10 @@ class SqlTrace():
             if name is None:
                 name = self.get_unique_name(t)
                 
-            if t not in self.node_cache:
-                self.node_cache[t] = self._do_trace_table_structure(t, name, type=type, select_sources=select_sources)
-                
-            return self.node_cache[t]
+            if id(t) not in self.node_cache:
+                self.node_cache[id(t)] = (t, self._do_trace_table_structure(t, name, type=type, select_sources=select_sources))
+
+            return self.node_cache[id(t)][1]
         
         def _do_trace_table_structure(self, t, name, *, type=None, select_sources=None):
             print(f'Tracing [{t.type}]: {name}')
@@ -406,7 +414,7 @@ class SqlTrace():
                 if recursive_table:
 				    # if we have a recursive CTE, we have to do some manual manipulation to prevent circular references
 					# 1. store the parsed "anchor" tables (ts) in the cache so that the recursive portion can reference them
-                    self.node_cache[original_t] = ts
+                    self.node_cache[id(original_t)] = (original_t, ts)
 					# 2. parse the recursive table portion (which will reference the anchor tables)
                     rts = self.trace_table_structure(recursive_table, name=name+f'.union_recursive', select_sources=select_sources)
                     

@@ -100,7 +100,7 @@ class MappingFilterTests(unittest.TestCase):
             ]
         )
         filtered = f.apply(g)
-        print(json.dumps(filtered.to_dict(simple=True), indent=2))
+        print(json.dumps(filtered.to_dict(), indent=2))
 
         A = filtered.to_agraph()  
         A.draw("test_source_mapping.png", prog="dot") 
