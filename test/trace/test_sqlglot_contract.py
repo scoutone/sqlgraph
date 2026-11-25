@@ -7,14 +7,16 @@ typed `DenseRank` in 27.11, `IS NOT NULL` went from `Not(Is)` to `Is(negate=True
 longer recognises a shape usually degrades quietly to an UNKNOWN source rather than failing.
 
 These tests assert the shapes directly, so after a sqlglot upgrade a failure here names the exact construct that
-moved.  They are written against the version pinned in setup.py: when bumping the pin, update the tracer
-(`sqlgraph/trace.py`) to handle the new shape, then update the expectation here.
+moved.  Each test accepts every shape the tracer knows how to handle (the old and the new one across the renames
+above) and fails on anything else: when bumping the pin, a failure here means a *new* shape that
+`sqlgraph/trace.py` must be taught to handle before the expectation is widened.
 """
 import unittest
 
 import sqlglot
 from sqlglot import exp
 
+from sqlgraph.trace import _arg, _FORMERLY_ANONYMOUS
 from test.trace.helpers import DIALECT
 
 
@@ -34,14 +36,20 @@ class SqlglotContractTests(unittest.TestCase):
     # ---- select structure ------------------------------------------------------------------------
 
     def test_select_from_arg_key(self):
-        # trace.py get_select_sources / union handling read select.args['from']
+        # trace.py reads it through _arg(select, 'from'): args['from'] before sqlglot 28, args['from_'] after
         s = parse('SELECT 1 FROM t')
-        self.assertShape('from' in s.args and isinstance(s.args['from'], exp.From),
-                         f"Select FROM is no longer args['from'] (args: {sorted(s.args)})")
+        self.assertShape(isinstance(_arg(s, 'from'), exp.From),
+                         f"Select FROM is neither args['from'] nor args['from_'] (args: {sorted(s.args)})")
+
+    def test_with_arg_key(self):
+        # get_comments reads the WITH clause's comments through _arg(select, 'with'): args['with'] / args['with_']
+        s = parse('WITH c AS (SELECT 1 AS a) SELECT * FROM c')
+        self.assertShape(isinstance(_arg(s, 'with'), exp.With),
+                         f"Select WITH is neither args['with'] nor args['with_'] (args: {sorted(s.args)})")
 
     def test_from_wraps_its_source_in_this(self):
         s = parse('SELECT 1 FROM t')
-        self.assertShape(isinstance(s.args['from'].args.get('this'), exp.Table), 'From.this is not the Table')
+        self.assertShape(isinstance(_arg(s, 'from').args.get('this'), exp.Table), 'From.this is not the Table')
 
     def test_joins_are_a_list_of_join_nodes(self):
         s = parse('SELECT 1 FROM a JOIN b ON a.x = b.x')
@@ -80,7 +88,7 @@ class SqlglotContractTests(unittest.TestCase):
 
     def test_table_function_with_ordinality_shape(self):
         # get_columns_for_table reads table.args['ordinality'] and the alias column list
-        t = parse('SELECT 1 FROM JSON_ARRAY_ELEMENTS(x) WITH ORDINALITY AS a(j, slot)').args['from'].this
+        t = _arg(parse('SELECT 1 FROM JSON_ARRAY_ELEMENTS(x) WITH ORDINALITY AS a(j, slot)'), 'from').this
         self.assertShape(isinstance(t, exp.Table) and isinstance(t.this, exp.Anonymous),
                          'FROM f() is not Table(Anonymous)')
         self.assertShape(bool(t.args.get('ordinality')), 'WITH ORDINALITY is not Table.args["ordinality"]')
@@ -88,21 +96,31 @@ class SqlglotContractTests(unittest.TestCase):
 
     # ---- expressions the tracer special-cases ----------------------------------------------------
 
-    def test_is_not_null_is_not_wrapping_is(self):
-        # trace.py maps exp.Is(Null) to 'IS NULL' and exp.Not to 'NOT', which is what produces NOT(IS NULL)
+    def test_is_not_null_shape(self):
+        # either Not(Is(.., Null)) (older sqlglot) or Is(.., Null, negate=True) (newer): trace.py maps both to NOT(IS NULL)
         e = first_projection('a IS NOT NULL')
-        self.assertShape(isinstance(e, exp.Not) and isinstance(e.this, exp.Is) and isinstance(e.this.expression, exp.Null),
-                         f'IS NOT NULL is no longer Not(Is(.., Null)) (got {e!r})')
+        old = isinstance(e, exp.Not) and isinstance(e.this, exp.Is) and isinstance(e.this.expression, exp.Null)
+        new = isinstance(e, exp.Is) and isinstance(e.expression, exp.Null) and bool(e.args.get('negate'))
+        self.assertShape(old or new, f'IS NOT NULL is neither Not(Is(.., Null)) nor Is(negate=True) (got {e!r})')
 
     def test_is_null_shape(self):
         e = first_projection('a IS NULL')
         self.assertShape(isinstance(e, exp.Is) and isinstance(e.expression, exp.Null), 'IS NULL is no longer Is(.., Null)')
 
-    def test_dense_rank_is_anonymous(self):
-        # trace.py has no DenseRank handling: it relies on the Anonymous path
+    def test_dense_rank_shape(self):
+        # Window(Anonymous) in older sqlglot, Window(DenseRank) in newer; the latter is in _FORMERLY_ANONYMOUS
         e = first_projection('DENSE_RANK() OVER (ORDER BY a)')
-        self.assertShape(isinstance(e, exp.Window) and isinstance(e.this, exp.Anonymous),
-                         f'DENSE_RANK() is no longer Window(Anonymous) (got {type(e.this).__name__})')
+        self.assertShape(isinstance(e, exp.Window), 'DENSE_RANK() OVER is not a Window')
+        self.assertShape(isinstance(e.this, exp.Anonymous) or isinstance(e.this, _FORMERLY_ANONYMOUS),
+                         f'DENSE_RANK() is {type(e.this).__name__}, which the tracer does not handle')
+
+    def test_promoted_functions_are_handled(self):
+        # these were generic Anonymous calls in older sqlglot (traced from their arguments); newer sqlglot types them.
+        # A typed node must be listed in trace._FORMERLY_ANONYMOUS or it is traced as UNKNOWN.
+        for call in ("REPLACE(a, ' ', '_')", 'ARRAY_REMOVE(a, b)', 'ASCII(a)', 'JSON_OBJECT_AGG(a, b)'):
+            e = first_projection(call)
+            ok = isinstance(e, exp.Anonymous) or isinstance(e, _FORMERLY_ANONYMOUS) or isinstance(e, exp.JSONObjectAgg)
+            self.assertShape(ok, f'{call} parses to {type(e).__name__}: add it to trace._FORMERLY_ANONYMOUS')
 
     def test_aggregate_window_shape(self):
         e = first_projection('SUM(a) OVER (PARTITION BY b)')

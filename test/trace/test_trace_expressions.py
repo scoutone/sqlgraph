@@ -176,6 +176,51 @@ class ExpressionTraceTests(TraceTestCase):
             transform('LIKE', {'left': FN, 'right': const("'a%'")})
         )
 
+    def test_not_like(self):
+        # newer sqlglot represents this as Like(negate=True) rather than Not(Like(..)); the lineage is the same
+        self.assert_source(
+            self.select("first_name NOT LIKE 'a%'"), 'x',
+            transform('NOT', [transform('LIKE', {'left': FN, 'right': const("'a%'")})])
+        )
+
+    def test_not_ilike(self):
+        self.assert_source(
+            self.select("first_name NOT ILIKE 'a%'"), 'x',
+            transform('NOT', [transform('ILIKE', {'left': FN, 'right': const("'a%'")})])
+        )
+
+    # ---- functions newer sqlglot types but older sqlglot treats as generic calls -------------------
+
+    def test_replace_traces_all_arguments(self):
+        self.assert_source(
+            self.select("REPLACE(first_name, 'a', 'b')"), 'x',
+            transform('REPLACE', [FN, const("'a'"), const("'b'")])
+        )
+
+    def test_ascii_and_trunc_trace_their_arguments(self):
+        self.assert_source(self.select("ASCII(first_name)"), 'x', transform('ASCII', [FN]))
+        self.assert_source(self.select("TRUNC(age)"), 'x', transform('TRUNC', [AGE]))
+
+    def test_json_object_agg_with_a_function_key(self):
+        # the key is itself a function call: it must not be mistaken for a key/value pair node
+        self.assert_source(
+            self.select("JSON_OBJECT_AGG(TRIM(first_name), last_name)"), 'x',
+            transform('JSON_OBJECT_AGG', [transform('TRIM', [FN]), LN])
+        )
+
+    def test_variadic_argument(self):
+        self.assert_source(
+            self.select("my_func(first_name, VARIADIC (ARRAY[age]))"), 'x',
+            transform('MY_FUNC', [FN, transform('VARIADIC', [transform('ARRAY', [AGE])])])
+        )
+
+    def test_regexp_replace_with_an_escape_string_pattern(self):
+        # E'..' patterns print as nothing through sqlglot's default generator in newer releases
+        self.assert_source(
+            self.select("REGEXP_REPLACE(first_name, E'[xy]', '_')"), 'x',
+            transform("REGEXP_REPLACE([xy], '_')", [FN])
+        )
+
     # ---- composites ------------------------------------------------------------------------------
 
     def test_coalesce(self):
@@ -242,6 +287,11 @@ class ExpressionTraceTests(TraceTestCase):
 
     def test_json_extract_through_cast(self):
         self.assert_source(self.select("(data->>'age')::INT"), 'x', ('path', 'age', DATA))
+
+    def test_json_extract_with_a_cast_on_the_key(self):
+        # `::` binds tighter than `->>`: newer sqlglot casts the key ('b'::text), older casts the whole result
+        self.assert_source(self.select("data->'a'->>'b'::TEXT"), 'x', ('path', 'a.b', DATA))
+        self.assert_source(self.select("data->'a b'->>'c'::TEXT"), 'x', ('path', '"a b".c', DATA))
 
     def test_jsonb_extract(self):
         self.assert_source(self.select("data::jsonb->>'x'"), 'x', ('path', 'x', DATA))
