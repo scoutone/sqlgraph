@@ -22,6 +22,17 @@ def _arg(expression, name):
     return None
 
 
+def _safe_sql(e):
+    """
+    Renders a node for an UNKNOWN label.  sqlglot's generator can raise on nodes it half-supports (e.g. CHR(..) in
+    28.10 - 30.10); a label that can't be rendered must not fail the whole trace.
+    """
+    try:
+        return str(e)
+    except Exception:
+        return f'<{type(e).__name__}>'
+
+
 def _literal_text(e):
     """
     How a function argument is shown in a label.  E'..' / raw strings print as an empty string through sqlglot's
@@ -989,4 +1000,4 @@ class SqlTrace():
                     return mdl.ConstantSource(value=fn_name)
                 return mdl.TransformSource(fn_name, [self.trace(x) for x in e.expressions])
             else:
-                return mdl.UnknownSource(f'[{type(e).__name__}] {e}')
+                return mdl.UnknownSource(f'[{type(e).__name__}] {_safe_sql(e)}')
