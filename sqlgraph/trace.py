@@ -9,6 +9,57 @@ from sqlgraph.model import CompositeSource
 
 _type = type
 
+
+def _arg(expression, name):
+    """
+    Reads an arg that sqlglot 28 renamed to avoid clashing with Python keywords ('from' -> 'from_', 'with' -> 'with_').
+    Works on either side of the rename.
+    """
+    for key in (f'{name}_', name):
+        value = expression.args.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _safe_sql(e):
+    """
+    Renders a node for an UNKNOWN label.  sqlglot's generator can raise on nodes it half-supports (e.g. CHR(..) in
+    28.10 - 30.10); a label that can't be rendered must not fail the whole trace.
+    """
+    try:
+        return str(e)
+    except Exception:
+        return f'<{type(e).__name__}>'
+
+
+def _literal_text(e):
+    """
+    How a function argument is shown in a label.  E'..' / raw strings print as an empty string through sqlglot's
+    default generator in newer releases, so read their text directly; everything else is rendered as SQL as before.
+    """
+    if _type(e) in [exp.ByteString, exp.RawString]:
+        return e.name
+    return str(e)
+
+
+# Functions that older sqlglot parses as a generic `Anonymous` call (traced from their arguments, see _trace) but that
+# newer releases promote to a typed node.  They are traced exactly as the Anonymous call was, so a sqlglot upgrade
+# doesn't change their lineage.  Names missing from the installed sqlglot are skipped.
+_FORMERLY_ANONYMOUS = tuple(
+    cls for cls in (
+        getattr(exp, name, None) for name in (
+            'Replace', 'ArrayRemove', 'Ascii', 'DenseRank', 'ArrayPosition', 'Trunc', 'Variadic', 'JSONBObjectAgg',
+        )
+    ) if cls is not None
+)
+
+# sqlglot's sql_name() mangles acronym-prefixed classes (JSONObjectAgg -> J_S_O_N_OBJECT_AGG); use the SQL names
+_TYPED_FUNCTION_NAMES = {
+    'JSONObjectAgg': 'JSON_OBJECT_AGG',
+    'JSONBObjectAgg': 'JSONB_OBJECT_AGG',
+}
+
 logger = logging.getLogger(__name__)
 
 
@@ -134,7 +185,9 @@ class SqlTrace():
                 try:
                     self.get_traced_table(table_id)
                 except Exception as ex:
-                    raise ValueError(f'Error parsing sql for {table_id}')
+                    # chain the original exception (and include its text) so the real cause - e.g. a parse error
+                    # or an unexpected AST shape after a sqlglot upgrade - isn't hidden behind this generic message
+                    raise ValueError(f'Error parsing sql for {table_id}: {type(ex).__name__}: {ex}') from ex
             return self.traced_tables
             
             
@@ -148,8 +201,9 @@ class SqlTrace():
 
         def get_comments(self, tbl):
             comments = tbl.comments or list()
-            if 'with' in tbl.args:
-                comments.extend(tbl.args['with'].comments or list())
+            with_ = _arg(tbl, 'with')
+            if with_ is not None:
+                comments.extend(with_.comments or list())
             return comments
         
         
@@ -253,8 +307,9 @@ class SqlTrace():
 
         def get_select_sources(self, select, include_outer=True):
             sources = {}
-            if 'from' in select.args:
-                own = [select.args['from']]
+            from_ = _arg(select, 'from')
+            if from_ is not None:
+                own = [from_]
                 own.extend(select.args.get('joins', []))
                 sources = {s.alias_or_name or f'src_{i}': s for i, s in enumerate(own)}
 
@@ -445,7 +500,7 @@ class SqlTrace():
             # recursive query must be union of one or more anchor queries and a single recursive query
             try:
                 last_union_table = union_table.right
-                last_union_src = self.get_table(last_union_table, last_union_table.args['from'])
+                last_union_src = self.get_table(last_union_table, _arg(last_union_table, 'from'))
                 if last_union_src != last_union_table.parent:
                     return False
             except Exception as ex:
@@ -610,6 +665,14 @@ class SqlTrace():
             return mdl.TransformSource('CONCAT', sources)
 
         def json_path_to_str(self, jp):
+            # Postgres binds `::` tighter than `->>`, so `j->>'key'::text` casts the key, not the result.  Newer sqlglot
+            # parses it that way and hands us Cast(Literal) instead of a JSONPath: unwrap it back to the plain key.
+            while _type(jp) == exp.Cast:
+                jp = jp.args['this']
+            if _type(jp) == exp.Literal:
+                if jp.is_string:
+                    return f'"{jp.name}"' if ' ' in jp.name else jp.name
+                return f'[{jp.name}]'
             s = []
             for e in jp.expressions:
                 if _type(e) == exp.JSONPathRoot:
@@ -638,7 +701,7 @@ class SqlTrace():
                     args = args+','+str(d.args['length'])
                 return mdl.TransformSource(f'SUBSTRING({args})', self.trace(d.args['this']))
             elif _type(d) == exp.SplitPart:
-                args = str(d.args['delimiter'])+','+str(d.args['part_index'])
+                args = _literal_text(d.args['delimiter'])+','+str(d.args['part_index'])
                 return mdl.TransformSource(f'SPLIT_PART({args})', self.trace(d.args['this']))
             elif _type(d) in [exp.TimeToStr, exp.StrToTime]:
                 if 'delimiter' in d.args:
@@ -680,7 +743,7 @@ class SqlTrace():
                     return CompositeSource([r, src])
             elif type(d) == exp.RegexpReplace:
                 return mdl.TransformSource(
-                    f'REGEXP_REPLACE({d.args["expression"]}, {d.args["replacement"]})',
+                    f'REGEXP_REPLACE({_literal_text(d.args["expression"])}, {_literal_text(d.args["replacement"])})',
                     self.trace(d.args['this'])
                 )
             elif len(params) == 1:
@@ -754,6 +817,27 @@ class SqlTrace():
             else:
                 raise ValueError(f'unhandled: {e}')
         
+        def trace_is(self, e):
+            if type(e.right) == exp.Null:
+                return mdl.TransformSource('IS NULL', [self.trace(e.left)])
+            return mdl.TransformSource('IS', {'left': self.trace(e.left), 'right': self.trace(e.right)})
+
+        def trace_typed_function(self, e):
+            # same as the Anonymous branch of _trace: the output derives from the call's arguments, in order
+            fn_name = _TYPED_FUNCTION_NAMES.get(type(e).__name__) or (
+                e.sql_name() if isinstance(e, exp.Func) else type(e).__name__.upper()
+            )
+            args = []
+            for key in e.arg_types:
+                value = e.args.get(key)
+                if isinstance(value, exp.Expression):
+                    args.append(value)
+                elif isinstance(value, list):
+                    args.extend(v for v in value if isinstance(v, exp.Expression))
+            if not args:
+                return mdl.ConstantSource(value=fn_name)
+            return mdl.TransformSource(fn_name, [self.trace(x) for x in args])
+
         def trace(self, e):
             tracer = self.tracers.get(type(e))
             if tracer:
@@ -818,8 +902,20 @@ class SqlTrace():
                 raise ValueError('something is wrong')
             elif type(e) in [exp.Lower, exp.Not, exp.UnixToTime, exp.GroupConcat, exp.Explode]:
                 return mdl.TransformSource(e.__class__.__name__.upper(), self.trace(e.args['this']))
+            elif type(e) in [exp.Like, exp.ILike] and e.args.get('negate'):
+                # newer sqlglot parses `a NOT LIKE b` as Like(negate=True) instead of Not(Like(..)): same lineage as before
+                return mdl.TransformSource(
+                    'NOT',
+                    mdl.TransformSource(
+                        e.__class__.__name__.upper(),
+                        {'left': self.trace(e.left), 'right': self.trace(e.right)}
+                    )
+                )
+            elif type(e) == exp.Is and e.args.get('negate'):
+                # newer sqlglot parses `a IS NOT NULL` as Is(negate=True) instead of Not(Is(..)): same lineage as before
+                return mdl.TransformSource('NOT', self.trace_is(e))
             elif type(e) == exp.Is and type(e.right) == exp.Null:
-                return mdl.TransformSource('IS NULL', [self.trace(e.left)])
+                return self.trace_is(e)
             elif type(e) == exp.In:
                 return mdl.TransformSource(
                     'IN',
@@ -859,12 +955,19 @@ class SqlTrace():
                     ]
                 )
             elif type(e) in [exp.JSONObjectAgg]:
-                return mdl.TransformSource(
-                    e.__class__.__name__.upper(), 
-                    [
-                        self.trace(e.expressions[0].args['this']),
-                        self.trace(e.expressions[0].args['expression'])
-                    ])
+                first = e.expressions[0] if e.expressions else None
+                if first is not None and isinstance(first, getattr(exp, 'JSONKeyValue', ())):
+                    # JSON_OBJECTAGG(k : v): the argument is a single key/value pair node
+                    return mdl.TransformSource(
+                        e.__class__.__name__.upper(),
+                        [
+                            self.trace(first.args['this']),
+                            self.trace(first.args['expression'])
+                        ])
+                # json_object_agg(k, v): newer sqlglot types this call, with the arguments as plain expressions
+                return self.trace_typed_function(e)
+            elif _FORMERLY_ANONYMOUS and isinstance(e, _FORMERLY_ANONYMOUS):
+                return self.trace_typed_function(e)
             elif type(e) in [exp.StrPosition]:
                 return mdl.TransformSource(
                     e.__class__.__name__.upper(), 
@@ -897,4 +1000,4 @@ class SqlTrace():
                     return mdl.ConstantSource(value=fn_name)
                 return mdl.TransformSource(fn_name, [self.trace(x) for x in e.expressions])
             else:
-                return mdl.UnknownSource(f'[{type(e).__name__}] {e}')
+                return mdl.UnknownSource(f'[{type(e).__name__}] {_safe_sql(e)}')

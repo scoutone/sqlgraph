@@ -254,5 +254,22 @@ class ModelClassTests(unittest.TestCase):
         self.assertEqual([a, b], t.all_sources())
 
 
+class SafeSqlTests(unittest.TestCase):
+
+    def test_renders_a_node_normally(self):
+        from sqlgraph.trace import _safe_sql
+        self.assertEqual('a + 1', _safe_sql(parse('SELECT a + 1 FROM t').expressions[0]))
+
+    def test_falls_back_when_sqlglot_cannot_render_the_node(self):
+        # sqlglot 28.10 - 30.10 raise while generating CHR(..): that must not fail the trace
+        from sqlgraph.trace import _safe_sql
+
+        class Unrenderable(exp.Expression):
+            def __str__(self):
+                raise TypeError("object of type 'Literal' has no len()")
+
+        self.assertEqual('<Unrenderable>', _safe_sql(Unrenderable()))
+
+
 if __name__ == '__main__':
     unittest.main()
