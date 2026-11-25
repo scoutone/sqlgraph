@@ -134,7 +134,9 @@ class SqlTrace():
                 try:
                     self.get_traced_table(table_id)
                 except Exception as ex:
-                    raise ValueError(f'Error parsing sql for {table_id}')
+                    # chain the original exception (and include its text) so the real cause - e.g. a parse error
+                    # or an unexpected AST shape after a sqlglot upgrade - isn't hidden behind this generic message
+                    raise ValueError(f'Error parsing sql for {table_id}: {type(ex).__name__}: {ex}') from ex
             return self.traced_tables
             
             
